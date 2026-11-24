@@ -4,8 +4,9 @@
 > Execution log: GitHub Issue #1 (`Execution Log & Cross-Device Handoff`).
 
 ## Current Stage & Last Tag
-- **Current stage:** Stage 4 — Evaluation Suite & Reporting ✅ (Stage 0 Azure cleanup still pending sign-in)
-- **Last tag:** `v0.4-eval`
+- **Current stage:** Stage 5 — Azure IaC, Helm & ADRs 🟡 (all code done; **cloud deployment blocked on
+  `az login`** — three device codes expired unanswered). Stage 0 Azure cleanup is blocked the same way.
+- **Last tag:** `v0.4-eval` (`v0.5-infra` is set after the first successful cloud deploy)
 
 | Tag | Commit | Notes |
 |---|---|---|
@@ -13,7 +14,7 @@
 | `v0.1-data` | `0bd95e0` | data + generator |
 | `v0.2-db-ingest` | `07042bd` | schema, indexes, ingestion |
 | `v0.3-hybrid-api` | `9a09c22` | RRF engine + API |
-| `v0.4-eval` | see `git log --grep "feat(stage-4)"` | benchmark + MLflow |
+| `v0.4-eval` | `e4f60fe` | benchmark + MLflow |
 
 > Tags are created locally in the cloud session; its git proxy rejects tag pushes (HTTP 403).
 > From a workstation: `git fetch origin && git tag -a <tag> <commit> -m <tag> && git push origin --tags`.
@@ -64,6 +65,18 @@
 - `docs/eval_report.md`, `docs/eval_notes.md`, `docs/eval_summary.json`, README metrics table
 - Data fix `844ad59`: token-set catalog dedup (label noise), generator v2 (harder, more realistic)
 - Shipped fusion defaults (dev-tuned): `w_dense=0.5, w_fts=0.25, w_trgm=1.5, w_unit=1.0, k=60`
+- **Stage 5 (code complete):** `infra/bicep/main.bicep` (Log Analytics 30 d + 0.15 GB/day cap; ACA
+  environment + app 0.5 vCPU/1 GiB, min 0/max 2, startup/liveness/readiness probes; PostgreSQL
+  Flexible B1ms 32 GiB, no HA/geo/autogrow, `azure.extensions=VECTOR,PG_TRGM`; `migrate` and
+  `ingest` ACA Jobs; DB URL only as an ACA secret) — compiles with zero warnings
+- `infra/helm/skumatch` — Deployment, Service, HPA, PDB, PgBouncer, pre-upgrade Alembic hook,
+  restricted pod security; `helm lint --strict` clean
+- `docs/adr/001-connection-pooling-b1ms.md`, `docs/adr/002-aca-vs-aks-tco.md`
+- `infra/scripts/`: `azure_cleanup.sh`, `deploy_infra.sh`, `setup_github_oidc.sh`, `create_budget.sh`
+  (shellcheck clean)
+- `.github/workflows/`: `ci.yml`, `deploy.yml` (ghcr.io → migration gate job → revision → smoke
+  test → restore DB power state; skipped until OIDC vars exist), `db-power.yml` (actionlint clean)
+- Final `README.md` (Mermaid architecture, benchmark, API, cost analysis)
 
 ## Verified Metrics & Commands
 ```text
@@ -92,12 +105,25 @@ Hybrid vs Lexical overall R@1 +0.033 (p<0.001) | ocr_typos +0.131 ✅ | hard_neg
 Hybrid vs Trigram-only: tie (0.969 vs 0.971, p≈0.85)
 Live latency (ORT 1 thread, local PG): dense p95 ~14 ms, lexical ~33 ms, hybrid ~43 ms
 pytest -> 77 passed
+# Stage 5 (local + GitHub Actions)
+bicep build (0.31.92) -> 0 warnings | helm lint --strict -> 0 failures, 9 manifests rendered
+GitHub Actions ci (ruff, mypy, pytest vs pgvector/pgvector:pg16, helm, bicep) -> green
 ```
 
 ## Azure Resources State
-- Subscription check (`az account show`) and Resource Group cleanup: **pending** — the cloud
-  session is waiting for the device-code sign-in (`az login --tenant <tenant> --use-device-code`).
-- No Azure resources have been created by this project yet.
+- **Nothing created yet.** Subscription check, RG cleanup and deployment are blocked on sign-in.
+- Planned (after `deploy_infra.sh`): RG `rg-skumatch` in `germanywestcentral` (fallback
+  `swedencentral` / `polandcentral` / `northeurope`), `skumatch-logs`, `skumatch-env`,
+  `skumatch-api`, `skumatch-migrate`, `skumatch-ingest`, `skumatch-pg-<hash>` (B1ms, stopped when idle).
+- Container images: `ghcr.io/vlad-vt/azure_pet:<sha12>` + `:latest` (built by `deploy.yml`).
+
+### Budget alerts — manual checklist (if `create_budget.sh` is rejected for the Students offer)
+1. Portal → *Cost Management + Billing* → *Cost Management* → *Budgets* → *+ Add* (scope: the
+   Azure for Students subscription).
+2. Name `skumatch-monthly`, reset period *Monthly*, amount **$30**.
+3. Alert conditions (type *Actual*): **16.7 %** (= $5), **50 %** (= $15), **100 %** (= $30);
+   recipient: your e-mail. Save.
+4. Also check *Azure for Students* credit balance at https://www.microsoftazuresponsorships.com/balance.
 
 ## Known Issues / Decisions
 - Cloud dev container has no Docker daemon; local integration tests run against a native
@@ -119,16 +145,32 @@ pytest -> 77 passed
   ships for robustness (see `docs/eval_notes.md`). Hybrid vs Dense on `hard_negatives` is a tie.
 - MLflow 3 put the plain file store in maintenance mode; tracking uses `sqlite:///mlruns/mlflow.db`
   (still local and file-based). Browse: `mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db`.
+- The cloud agent cannot push git tags (proxy 403) or set GitHub secrets (no `gh` write access);
+  both are workstation steps. Tags were *not* worked around via CI on purpose.
+- `deploy.yml` builds and pushes the image even before Azure exists; its `release` job is
+  *skipped* (not failed) until the `AZURE_RG` variable is set.
+- `db-power.yml` runs every 5 days as requested; worst case after Azure's 7-day auto-start is
+  ~4 days of B1ms compute (≈ $1.6). A daily schedule would cap it at < 1 day.
 - `/healthz` never touches the DB so a stopped database does not crash-loop replicas; `/readyz`
   reports 503 instead. The image cannot be built in the cloud dev container (no Docker daemon);
   the runtime environment was verified with `uv sync --frozen --no-dev --extra data --no-editable`.
 
 ## Exact Next Steps
-1. Complete `az login`, verify the subscription is *Azure for Students*, list and delete old RGs,
-   purge soft-deleted Key Vaults / Cognitive Services accounts.
-2. Stage 4: `scripts/eval.py` — Dense vs Lexical vs Hybrid RRF on the `test` split per slice
-   (R@1/5/10, MRR, NDCG@10, p50/p95), paired bootstrap significance, MLflow (`mlruns/`),
-   `docs/eval_report.md` → `v0.4-eval`.
+Run these from a workstation (or ask the agent in a new session) — order matters:
+1. `az login --tenant <tenant-id>` and `az account show` → must be **Azure for Students**.
+2. `CONFIRM=yes infra/scripts/azure_cleanup.sh` — lists, deletes all old RGs, purges soft-deleted
+   Key Vaults / Cognitive Services (Stage 0 leftover).
+3. Make the image pullable: GitHub → *Packages* → `azure_pet` → *Package settings* → visibility
+   **Public** (recommended for a portfolio). Otherwise create a PAT with `read:packages` and export
+   `GHCR_USERNAME` / `GHCR_TOKEN` for step 4 and save it as the `GHCR_PULL_TOKEN` secret.
+4. `IMAGE=ghcr.io/vlad-vt/azure_pet:latest infra/scripts/deploy_infra.sh` — Bicep deploy, runs the
+   `migrate` and `ingest` jobs (8,000 SKUs). Then `make explain`-style check via `/v1/match`.
+5. `ALERT_EMAIL=<you> infra/scripts/create_budget.sh` (or the manual checklist above).
+6. `infra/scripts/setup_github_oidc.sh` (needs `gh auth login`) — Entra app + federated credentials
+   (`main`, `environment:production`), Contributor on `rg-skumatch` only, GitHub secrets/variables.
+7. Re-run `deploy` (Actions → deploy → Run workflow) → expect green: migration gate, new revision,
+   smoke test. Then Actions → db-power → `stop`.
+8. Tag `v0.5-infra` and `v1.0-release`; push tags from the workstation (see tag table above).
 
 ### Quick Resume Prompt for Another Device
 ```text
