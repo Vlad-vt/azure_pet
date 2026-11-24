@@ -129,11 +129,15 @@ resource pgFirewallAzure 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRule
 }
 
 // ---------------------------------------------------------------- container apps
-resource acaEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
+// `environmentMode` exists only in preview API versions. Without it, new environments in some
+// regions default to `Express`, which does not support Container Apps Jobs (our migration gate).
+#disable-next-line BCP081
+resource acaEnv 'Microsoft.App/managedEnvironments@2025-10-02-preview' = {
   name: '${namePrefix}-env'
   location: location
   tags: tags
   properties: {
+    environmentMode: 'WorkloadProfiles'
     appLogsConfiguration: {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
