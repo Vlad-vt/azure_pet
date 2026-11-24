@@ -4,13 +4,14 @@
 > Execution log: GitHub Issue #1 (`Execution Log & Cross-Device Handoff`).
 
 ## Current Stage & Last Tag
-- **Current stage:** Stage 1 — Data & Synthetic Benchmark ✅ (Stage 0 Azure cleanup still pending sign-in)
-- **Last tag:** `v0.1-data`
+- **Current stage:** Stage 2 — Database, Indexes & ONNX Ingestion ✅ (Stage 0 Azure cleanup still pending sign-in)
+- **Last tag:** `v0.2-db-ingest`
 
 | Tag | Commit | Notes |
 |---|---|---|
 | `v0.0-bootstrap` | `18ced0b` | repo skeleton |
-| `v0.1-data` | see `git log --grep "feat(stage-1)"` | data + generator |
+| `v0.1-data` | `0bd95e0` | data + generator |
+| `v0.2-db-ingest` | see `git log --grep "feat(stage-2)"` | schema, indexes, ingestion |
 
 > Tags are created locally in the cloud session; its git proxy rejects tag pushes (HTTP 403).
 > From a workstation: `git fetch origin && git tag -a <tag> <commit> -m <tag> && git push origin --tags`.
@@ -34,6 +35,15 @@
 - `data/golden_eval.jsonl` — 1,200 labelled lines (300/slice; 289 dev / 911 test)
 - `docs/data_report.md`, `scripts/data_report.py`, `scripts/download_model.py`
 - Tests: `tests/unit/test_normalize.py`, `tests/unit/test_synth.py`
+- **Stage 2:** `src/skumatch/db/` (SQLAlchemy 2.0 model + async engine factory, B1ms pool 5+5,
+  PgBouncer mode disables asyncpg statement caches), Alembic (`alembic.ini`, `migrations/`,
+  revision `0001`: `vector` + `pg_trgm`, `skus` with generated `tsvector`,
+  HNSW `vector_cosine_ops (m=16, ef_construction=64)`, GIN tsvector, GIN `gin_trgm_ops`)
+- `src/skumatch/embeddings/onnx_embedder.py` — INT8 ONNX `multilingual-e5-small` (Xenova export,
+  pinned revision), mean pooling + L2 norm, `query: ` prefix on both sides (symmetric task)
+- `src/skumatch/ingest.py` + `scripts/ingest.py` — batch embed + idempotent upsert + `ANALYZE`
+- `scripts/explain.py` → `docs/explain_analyze.md` (fails if any retriever seq-scans)
+- Tests: `tests/conftest.py`, `tests/integration/test_db_ingest.py` (7 integration tests)
 
 ## Verified Metrics & Commands
 ```text
@@ -44,6 +54,11 @@ pytest tests/unit   -> 3 passed (bootstrap)
 make data                       -> 109,929 DE candidates -> 8,000 deduplicated SKUs
 generate_synthetic (seed=42)    -> 1,200 lines; sha256 364202e885e9a566… (byte-identical on rerun)
 pytest                          -> 34 passed
+# Stage 2 (4 vCPU dev container, PostgreSQL 16 + pgvector 0.6)
+make ingest     -> 8,000 rows; embed 14.2 s (565 rows/s); upsert+HNSW 17.6 s; table 38 MB
+make explain    -> HNSW 3.6 ms, GIN tsvector 3.9 ms, GIN trigram 10.7 ms (all index scans)
+embed_one       -> p50 2.9 ms, p95 4.2 ms (1 thread); process RSS ~470 MB with model loaded
+pytest (with SKUMATCH_TEST_DATABASE_URL) -> 41 passed
 ```
 
 ## Azure Resources State
@@ -63,12 +78,15 @@ pytest                          -> 34 passed
 - Hard negatives require *discriminating evidence* (a name token the sibling lacks, or a
   different pack size); ambiguous sibling pairs are rejected by the generator.
 - The raw 7.7 GB dump lives in `data/raw/` (git-ignored); only the compact catalog is committed.
+- FTS uses the `simple` config on pre-folded text (no stemming); abbreviations are handled with
+  prefix terms (`'vollm':*`). Migrations always use the *direct* URL (never PgBouncer).
+- Local integration DB: `SKUMATCH_TEST_DATABASE_URL=postgresql+asyncpg://skumatch:skumatch@localhost:5432/skumatch_test`.
 
 ## Exact Next Steps
 1. Complete `az login`, verify the subscription is *Azure for Students*, list and delete old RGs,
    purge soft-deleted Key Vaults / Cognitive Services accounts.
-2. Stage 2: Alembic schema (HNSW / GIN tsvector / GIN trigram), ONNX INT8 embedder, batch ingest,
-   `make explain` → `v0.2-db-ingest`.
+2. Stage 3: Hybrid RRF engine (`src/skumatch/retrieval/`) + FastAPI (`/v1/match`,
+   `/v1/match/batch`, `/v1/skus/{id}`, `/healthz`, `/readyz`) + integration tests → `v0.3-hybrid-api`.
 
 ### Quick Resume Prompt for Another Device
 ```text
