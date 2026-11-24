@@ -22,7 +22,6 @@ dependencies = [
 
 [project.optional-dependencies]
 data = [
-    "duckdb>=1.1",
     "pyarrow>=18",
     "huggingface-hub>=0.26",
 ]

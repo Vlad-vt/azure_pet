@@ -4,14 +4,15 @@
 > Execution log: GitHub Issue #1 (`Execution Log & Cross-Device Handoff`).
 
 ## Current Stage & Last Tag
-- **Current stage:** Stage 2 — Database, Indexes & ONNX Ingestion ✅ (Stage 0 Azure cleanup still pending sign-in)
-- **Last tag:** `v0.2-db-ingest`
+- **Current stage:** Stage 3 — Hybrid RRF Engine & FastAPI ✅ (Stage 0 Azure cleanup still pending sign-in)
+- **Last tag:** `v0.3-hybrid-api`
 
 | Tag | Commit | Notes |
 |---|---|---|
 | `v0.0-bootstrap` | `18ced0b` | repo skeleton |
 | `v0.1-data` | `0bd95e0` | data + generator |
-| `v0.2-db-ingest` | see `git log --grep "feat(stage-2)"` | schema, indexes, ingestion |
+| `v0.2-db-ingest` | `07042bd` | schema, indexes, ingestion |
+| `v0.3-hybrid-api` | see `git log --grep "feat(stage-3)"` | RRF engine + API |
 
 > Tags are created locally in the cloud session; its git proxy rejects tag pushes (HTTP 403).
 > From a workstation: `git fetch origin && git tag -a <tag> <commit> -m <tag> && git push origin --tags`.
@@ -44,6 +45,15 @@
 - `src/skumatch/ingest.py` + `scripts/ingest.py` — batch embed + idempotent upsert + `ANALYZE`
 - `scripts/explain.py` → `docs/explain_analyze.md` (fails if any retriever seq-scans)
 - Tests: `tests/conftest.py`, `tests/integration/test_db_ingest.py` (7 integration tests)
+- **Stage 3:** `src/skumatch/retrieval/` — weighted RRF (`k=60`, deterministic tie-break), one
+  round-trip `UNION ALL` SQL for dense/FTS/trigram top-k, prefix tsquery builder (injection-safe),
+  unit-agreement list (pack size parsed from the line == SKU pack size) as a 4th RRF input,
+  modes `hybrid` / `dense` / `lexical`
+- `src/skumatch/api/` — FastAPI: `POST /v1/match`, `POST /v1/match/batch`, `GET /v1/skus/{id}`,
+  `GET /healthz` (liveness, no DB), `GET /readyz` (DB ping, 3 s timeout → 503); request-id
+  middleware, access log without bodies, generic 500 handler
+- `Dockerfile` (multi-stage, uv.lock, model baked into a layer, non-root uid 10001), `.dockerignore`
+- Tests: `tests/unit/test_fusion.py`, `tests/integration/test_api.py`
 
 ## Verified Metrics & Commands
 ```text
@@ -59,6 +69,12 @@ make ingest     -> 8,000 rows; embed 14.2 s (565 rows/s); upsert+HNSW 17.6 s; ta
 make explain    -> HNSW 3.6 ms, GIN tsvector 3.9 ms, GIN trigram 10.7 ms (all index scans)
 embed_one       -> p50 2.9 ms, p95 4.2 ms (1 thread); process RSS ~470 MB with model loaded
 pytest (with SKUMATCH_TEST_DATABASE_URL) -> 41 passed
+# Stage 3 (uvicorn, 1 worker, ORT 1 thread, through PgBouncer transaction mode)
+POST /v1/match  concurrency 1 -> p50 34.5 ms, p95 52.6 ms, 27 rps
+POST /v1/match  concurrency 4 -> p50 45.0 ms, p95 63.7 ms, 87 rps
+POST /v1/match/batch (100 lines) -> 1.23 s
+runtime venv 396 MB + model 135 MB; process RSS ~540 MB (fits 0.5 vCPU / 1.0 GiB ACA)
+pytest (unit + integration) -> 70 passed
 ```
 
 ## Azure Resources State
@@ -81,12 +97,16 @@ pytest (with SKUMATCH_TEST_DATABASE_URL) -> 41 passed
 - FTS uses the `simple` config on pre-folded text (no stemming); abbreviations are handled with
   prefix terms (`'vollm':*`). Migrations always use the *direct* URL (never PgBouncer).
 - Local integration DB: `SKUMATCH_TEST_DATABASE_URL=postgresql+asyncpg://skumatch:skumatch@localhost:5432/skumatch_test`.
+- `/healthz` never touches the DB so a stopped database does not crash-loop replicas; `/readyz`
+  reports 503 instead. The image cannot be built in the cloud dev container (no Docker daemon);
+  the runtime environment was verified with `uv sync --frozen --no-dev --extra data --no-editable`.
 
 ## Exact Next Steps
 1. Complete `az login`, verify the subscription is *Azure for Students*, list and delete old RGs,
    purge soft-deleted Key Vaults / Cognitive Services accounts.
-2. Stage 3: Hybrid RRF engine (`src/skumatch/retrieval/`) + FastAPI (`/v1/match`,
-   `/v1/match/batch`, `/v1/skus/{id}`, `/healthz`, `/readyz`) + integration tests → `v0.3-hybrid-api`.
+2. Stage 4: `scripts/eval.py` — Dense vs Lexical vs Hybrid RRF on the `test` split per slice
+   (R@1/5/10, MRR, NDCG@10, p50/p95), paired bootstrap significance, MLflow (`mlruns/`),
+   `docs/eval_report.md` → `v0.4-eval`.
 
 ### Quick Resume Prompt for Another Device
 ```text

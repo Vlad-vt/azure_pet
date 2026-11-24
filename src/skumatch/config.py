@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     rrf_w_dense: float = Field(default=1.0, ge=0.0)
     rrf_w_fts: float = Field(default=1.0, ge=0.0)
     rrf_w_trgm: float = Field(default=1.0, ge=0.0)
+    rrf_w_unit: float = Field(default=1.0, ge=0.0)
+    trgm_threshold: float = Field(default=0.15, ge=0.0, le=1.0)
     candidates_per_retriever: int = Field(default=50, ge=1, le=500)
     hnsw_ef_search: int = Field(default=80, ge=10, le=1000)
     max_batch_size: int = Field(default=100, ge=1, le=1000)
