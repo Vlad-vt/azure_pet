@@ -17,11 +17,13 @@ b1ms_available() {
 }
 
 # Reuse the region of an existing deployment; otherwise pick the first region that offers B1ms
-# (student subscriptions are often restricted in germanywestcentral).
+# (this Azure for Students subscription: PostgreSQL is restricted in germanywestcentral and an
+# "Allowed resource deployment regions" policy limits resources to 5 EU regions).
 if existing=$(az group show -n "$RG" --query location -o tsv 2>/dev/null); then
   LOCATION="$existing"
 else
-  for candidate in "$LOCATION" swedencentral polandcentral northeurope; do
+  # Candidates are the regions allowed by the subscription policy that also offer ACA + B1ms.
+  for candidate in "$LOCATION" belgiumcentral norwayeast switzerlandnorth; do
     if b1ms_available "$candidate"; then LOCATION="$candidate"; break; fi
     echo "Standard_B1ms not offered in $candidate for this subscription"
   done
