@@ -10,28 +10,50 @@ for provider in Microsoft.App Microsoft.OperationalInsights Microsoft.DBforPostg
   az provider register -n "$provider" -o none
 done
 
-echo "Checking Standard_B1ms availability in ${LOCATION}..."
-if ! az postgres flexible-server list-skus -l "$LOCATION" \
-     --query "[].supportedServerEditions[?name=='Burstable'][].supportedServerSkus[].name" -o tsv \
-     | grep -qx "Standard_B1ms"; then
-  echo "ERROR: Standard_B1ms not offered in ${LOCATION}; try swedencentral, polandcentral or northeurope." >&2
-  exit 1
+b1ms_available() {
+  az postgres flexible-server list-skus -l "$1" \
+    --query "[].supportedServerEditions[?name=='Burstable'][].supportedServerSkus[].name" -o tsv \
+    2>/dev/null | grep -qx "Standard_B1ms"
+}
+
+# Reuse the region of an existing deployment; otherwise pick the first region that offers B1ms
+# (student subscriptions are often restricted in germanywestcentral).
+if existing=$(az group show -n "$RG" --query location -o tsv 2>/dev/null); then
+  LOCATION="$existing"
+else
+  for candidate in "$LOCATION" swedencentral polandcentral northeurope; do
+    if b1ms_available "$candidate"; then LOCATION="$candidate"; break; fi
+    echo "Standard_B1ms not offered in $candidate for this subscription"
+  done
 fi
+b1ms_available "$LOCATION" || { echo "ERROR: no region with Standard_B1ms found" >&2; exit 1; }
+echo "Region: $LOCATION"
 
 mkdir -p "$STATE_DIR" && chmod 700 "$STATE_DIR"
 pw_file="$STATE_DIR/pg_admin_password"
+app="${NAME_PREFIX}-api"
+if [[ ! -s "$pw_file" ]] && az containerapp show -g "$RG" -n "$app" -o none 2>/dev/null; then
+  # Re-deploy from a new machine: recover the password from the Container Apps secret so the
+  # server password is not rotated by accident.
+  az containerapp secret show -g "$RG" -n "$app" --secret-name database-url --query value -o tsv |
+    python3 -c "import sys,urllib.parse as u;print(u.unquote(u.urlsplit(sys.stdin.read().strip()).password))" \
+    > "$pw_file"
+  chmod 600 "$pw_file"
+  echo "Recovered PostgreSQL admin password from the Container App secret -> $pw_file"
+fi
 if [[ ! -s "$pw_file" ]]; then
-  # URL-safe, 40 chars; stored only on this machine — copy it to a password manager.
+  # URL-safe, 40 chars; stored only on this machine and in the Container Apps secret.
   python3 -c "import secrets,string;a=string.ascii_letters+string.digits;print(''.join(secrets.choice(a) for _ in range(40)))" > "$pw_file"
   chmod 600 "$pw_file"
   echo "Generated PostgreSQL admin password -> $pw_file"
 fi
+PG_PASSWORD="$(cat "$pw_file")"
 
 az group create -n "$RG" -l "$LOCATION" --tags project=skumatch cost-center=portfolio -o none
 az deployment group create -g "$RG" -n "skumatch-$(date +%Y%m%d%H%M%S)" \
   --template-file "$(dirname "$0")/../bicep/main.bicep" \
   --parameters namePrefix="$NAME_PREFIX" image="$IMAGE" \
-               pgAdminPassword=@"$pw_file" \
+               pgAdminPassword="$PG_PASSWORD" \
                ghcrUsername="${GHCR_USERNAME:-}" ghcrToken="${GHCR_TOKEN:-}" \
   --query "properties.outputs" -o json > "$STATE_DIR/outputs.json"
 python3 - "$STATE_DIR/outputs.json" <<'PY'
