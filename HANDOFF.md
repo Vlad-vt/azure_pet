@@ -4,8 +4,9 @@
 > Execution log: GitHub Issue #1 (`Execution Log & Cross-Device Handoff`).
 
 ## Current Stage & Last Tag
-- **Current stage:** Stage 5 — Azure IaC, Helm & ADRs 🟡 (all code done; **cloud deployment blocked on
-  `az login`** — three device codes expired unanswered). Stage 0 Azure cleanup is blocked the same way.
+- **Current stage:** Stage 5 — Azure IaC, Helm & ADRs 🟡 (infrastructure deployed; waiting for the
+  ghcr.io package to become public to run migrations, ingest and the real API image).
+  Stage 0 Azure cleanup ✅ done.
 - **Last tag:** `v0.4-eval` (`v0.5-infra` is set after the first successful cloud deploy)
 
 | Tag | Commit | Notes |
@@ -111,11 +112,44 @@ GitHub Actions ci (ruff, mypy, pytest vs pgvector/pgvector:pg16, helm, bicep) ->
 ```
 
 ## Azure Resources State
-- **Nothing created yet.** Subscription check, RG cleanup and deployment are blocked on sign-in.
-- Planned (after `deploy_infra.sh`): RG `rg-skumatch` in `germanywestcentral` (fallback
-  `swedencentral` / `polandcentral` / `northeurope`), `skumatch-logs`, `skumatch-env`,
-  `skumatch-api`, `skumatch-migrate`, `skumatch-ingest`, `skumatch-pg-<hash>` (B1ms, stopped when idle).
-- Container images (built and pushed by `deploy.yml` run 3, green): `ghcr.io/vlad-vt/azure_pet:cd26243288d3` and `:latest`. The package is **private** until its visibility is changed (Next Steps, step 3). The `release` job was skipped as designed because OIDC is not configured yet.
+Subscription: **Azure for Students** (verified with `az account show`). Stage 0 cleanup done:
+deleted `rg-ai-lab` and `rg-rechnungscheck-dev` (2 Cognitive Services accounts + 1 AI Foundry project) and purged both
+soft-deleted Cognitive Services accounts; no soft-deleted Key Vaults existed.
+
+| Resource | Name | Region | State |
+|---|---|---|---|
+| Resource group | `rg-skumatch-chn` | switzerlandnorth | Succeeded |
+| Log Analytics | `skumatch-logs` (30 d, 0.15 GB/day cap) | switzerlandnorth | Succeeded |
+| ACA environment | `skumatch-env` (`environmentMode: WorkloadProfiles`, Consumption) | switzerlandnorth | Succeeded |
+| Container App | `skumatch-api` (0.5 vCPU / 1 GiB, min 0 / max 2) | switzerlandnorth | placeholder image until ghcr is public |
+| ACA Jobs | `skumatch-migrate`, `skumatch-ingest` | switzerlandnorth | created, not yet run |
+| PostgreSQL Flexible | `skumatch-pg-t6ucewwfw43f6` (B1ms, PG 16, 32 GiB, no HA) | **denmarkeast** | **Stopped** |
+
+Public URL (after the real image is deployed):
+`https://skumatch-api.lemonisland-f8af8152.switzerlandnorth.azurecontainerapps.io`
+
+Container images (built and pushed by `deploy.yml`, green): `ghcr.io/vlad-vt/azure_pet:cd26243288d3`
+and `:latest`. The package is still **private**, so the app runs a placeholder image for now.
+The PostgreSQL admin password exists only in the Container App secret `database-url` and in
+`~/.skumatch/pg_admin_password` on the deploying machine (`deploy_infra.sh` recovers it from the
+secret on other machines).
+
+#### Why this topology (region log, 2026-11-24)
+The subscription carries an *Allowed resource deployment regions* policy: `norwayeast`,
+`denmarkeast`, `germanywestcentral`, `belgiumcentral`, `switzerlandnorth`.
+
+| Region | PostgreSQL B1ms | Container Apps |
+|---|---|---|
+| germanywestcentral | ❌ provisioning restricted for this subscription | ✅ |
+| swedencentral | ❌ blocked by region policy | — |
+| belgiumcentral | ❌ `RegionalAllocationFailed` (no capacity) | ✅ |
+| norwayeast | ❌ `CapacityNotAvailable` | ✅ |
+| switzerlandnorth | ❌ `SkuNotAvailable` | ✅ (defaults to *Express* mode → no Jobs; pinned to `WorkloadProfiles`) |
+| denmarkeast | ✅ **created** | ❌ not offered |
+
+Hence the API runs in `switzerlandnorth` and the database in `denmarkeast` (cross-region hop,
+latency to be measured). Moving both into `germanywestcentral` needs an Azure Support request
+(*Service and subscription limits*) to lift the PostgreSQL restriction.
 
 ### Budget alerts — manual checklist (if `create_budget.sh` is rejected for the Students offer)
 1. Portal → *Cost Management + Billing* → *Cost Management* → *Budgets* → *+ Add* (scope: the
@@ -157,17 +191,18 @@ GitHub Actions ci (ruff, mypy, pytest vs pgvector/pgvector:pg16, helm, bicep) ->
 
 ## Exact Next Steps
 Run these from a workstation (or ask the agent in a new session) — order matters:
-1. `az login --tenant <tenant-id>` and `az account show` → must be **Azure for Students**.
-2. `CONFIRM=yes infra/scripts/azure_cleanup.sh` — lists, deletes all old RGs, purges soft-deleted
-   Key Vaults / Cognitive Services (Stage 0 leftover).
-3. Make the image pullable: GitHub → *Packages* → `azure_pet` → *Package settings* → visibility
+1. ✅ `az login` + `az account show` → Azure for Students.
+2. ✅ Stage 0 cleanup (done 2026-11-24).
+3. ⏳ **Owner action:** make the image pullable: GitHub → *Packages* → `azure_pet` → *Package settings* → visibility
    **Public** (recommended for a portfolio). Otherwise create a PAT with `read:packages` and export
    `GHCR_USERNAME` / `GHCR_TOKEN` for step 4 and save it as the `GHCR_PULL_TOKEN` secret.
-4. `IMAGE=ghcr.io/vlad-vt/azure_pet:latest infra/scripts/deploy_infra.sh` — Bicep deploy, runs the
-   `migrate` and `ingest` jobs (8,000 SKUs). Then `make explain`-style check via `/v1/match`.
+4. Infra is deployed with a placeholder image. Once the package is public:
+   `az postgres flexible-server start -g rg-skumatch-chn -n skumatch-pg-t6ucewwfw43f6`, then
+   `RG=rg-skumatch-chn PG_LOCATION=denmarkeast IMAGE=ghcr.io/vlad-vt/azure_pet:latest infra/scripts/deploy_infra.sh`
+   (re-deploys with the real image and runs the `migrate` + `ingest` jobs), then smoke-test `/v1/match`.
 5. `ALERT_EMAIL=<you> infra/scripts/create_budget.sh` (or the manual checklist above).
 6. `infra/scripts/setup_github_oidc.sh` (needs `gh auth login`) — Entra app + federated credentials
-   (`main`, `environment:production`), Contributor on `rg-skumatch` only, GitHub secrets/variables.
+   (`main`, `environment:production`), Contributor on `rg-skumatch-chn` only, GitHub secrets/variables.
 7. Re-run `deploy` (Actions → deploy → Run workflow) → expect green: migration gate, new revision,
    smoke test. Then Actions → db-power → `stop`.
 8. Tag `v0.5-infra` and `v1.0-release`; push tags from the workstation (see tag table above).

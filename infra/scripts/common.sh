@@ -3,7 +3,7 @@
 set -euo pipefail
 
 : "${LOCATION:=germanywestcentral}"
-: "${RG:=rg-skumatch}"
+: "${RG:=rg-skumatch-chn}"   # deployed RG (switzerlandnorth; DB in denmarkeast)
 : "${NAME_PREFIX:=skumatch}"
 # shellcheck disable=SC2034  # used by the scripts that source this file
 STATE_DIR="${SKUMATCH_STATE_DIR:-$HOME/.skumatch}"   # local, outside the repo (chmod 700)
