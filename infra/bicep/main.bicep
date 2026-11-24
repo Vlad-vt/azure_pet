@@ -48,8 +48,7 @@ param tags object = {
   'managed-by': 'bicep'
 }
 
-var suffix = uniqueString(resourceGroup().id)
-var pgServerName = '${namePrefix}-pg-${suffix}'
+var pgServerName = '${namePrefix}-pg-${uniqueString(resourceGroup().id, pgLocation)}'
 var dbName = 'skumatch'
 var useGhcrCredentials = !empty(ghcrUsername) && !empty(ghcrToken)
 
