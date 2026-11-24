@@ -67,6 +67,28 @@ def _first_brand(brands: str | None) -> str | None:
     return brand if 2 <= len(brand) <= 40 else None
 
 
+_KEY_TOKEN = re.compile(r"[a-z]+|\d+(?:\.\d+)?")
+
+
+def _token_set(text: str) -> frozenset[str]:
+    return frozenset(_KEY_TOKEN.findall(normalize_for_search(text)))
+
+
+def dedup_keys(brand: str, name: str, quantity: str) -> tuple[str, str | None]:
+    """Order/punctuation-insensitive keys that catch OFF near-duplicates.
+
+    * full key — tokens of brand ∪ name (``REWE Bio | Bio Gemüsebrühe`` ==
+      ``REWE Bio | Gemüsebrühe``; ``Früchte-Müsli Vollkorn`` == ``Vollkorn Müsli - Früchte``)
+    * name key — only when the name already carries a brand token, so brand-spelling variants
+      of the same product collapse (``Coca Cola Company | Coca-Cola Zero`` ==
+      ``Coca-Cola | Coca-Cola Zero``) while generic names of different brands stay distinct.
+    """
+    b, n = _token_set(brand), _token_set(name)
+    full = "|".join(sorted(b | n)) + f"#{quantity}"
+    named = "|".join(sorted(n)) + f"#{quantity}" if b & n else None
+    return full, named
+
+
 def build(parquet_path: Path, limit: int) -> pa.Table:
     pf = pq.ParquetFile(parquet_path)
     rows: list[dict[str, Any]] = []
@@ -104,17 +126,16 @@ def build(parquet_path: Path, limit: int) -> pa.Table:
             )
     print(f"candidates after filters: {len(rows)}")
     rows.sort(key=lambda x: (-x["scans"], -x["completeness"], x["ean"]))
-    seen: set[str] = set()
+    seen_full: set[str] = set()
+    seen_name: set[str] = set()
     out: list[dict[str, Any]] = []
     for row in rows:
-        brand_norm = normalize_for_search(row["brand"])
-        name_norm = normalize_for_search(row["name"])
-        if brand_norm not in name_norm:
-            name_norm = f"{brand_norm} {name_norm}"
-        key = f"{name_norm}|{row['quantity']}"
-        if key in seen:
+        full_key, name_key = dedup_keys(row["brand"], row["name"], row["quantity"])
+        if full_key in seen_full or (name_key is not None and name_key in seen_name):
             continue
-        seen.add(key)
+        seen_full.add(full_key)
+        if name_key is not None:
+            seen_name.add(name_key)
         out.append(row)
         if len(out) >= limit:
             break

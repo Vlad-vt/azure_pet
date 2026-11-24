@@ -230,9 +230,15 @@ class InvoiceLineGenerator:
     def _abbreviate(self, item: CatalogItem) -> tuple[str, list[str]]:
         rng = self.rng
         transforms: list[str] = []
-        brand = self._brand_code(item.brand) if rng.random() < 0.6 else item.brand.upper()
-        if brand != item.brand.upper():
+        roll = rng.random()
+        if roll < 0.2:
+            brand = ""
+            transforms.append("brand_omitted")
+        elif roll < 0.7:
+            brand = self._brand_code(item.brand)
             transforms.append("brand_code")
+        else:
+            brand = item.brand.upper()
         name = item.name
         if fold_text(name).startswith(fold_text(item.brand)):
             name = name[len(item.brand) :].strip(" -")
@@ -260,7 +266,10 @@ class InvoiceLineGenerator:
         qty = (
             item.quantity_raw.upper().replace(" ", "") if rng.random() < 0.5 else item.quantity_raw
         )
-        head = " ".join([brand, *words])
+        if len(words) >= 3 and rng.random() < 0.2:
+            words = words[1:] + words[:1]
+            transforms.append("word_rotation")
+        head = " ".join([brand, *words]).strip()
         if rng.random() < 0.3 and len(head) > 26:
             head = head[: rng.randint(22, 26)].rstrip()
             transforms.append("field_width_cut")
@@ -283,7 +292,7 @@ class InvoiceLineGenerator:
         if rng.random() < 0.6:
             base = base.upper()
         chars: list[str] = []
-        rate = rng.uniform(0.07, 0.14)
+        rate = rng.uniform(0.10, 0.20)
         for c in base:
             if c in "äöüÄÖÜß" and rng.random() < 0.85:
                 chars.append(rng.choice(_OCR_SUBS[c]))
@@ -345,14 +354,26 @@ class InvoiceLineGenerator:
         discriminating = _tokens(target.name) - _tokens(negative.name)
         transforms = ["sibling_in_catalog"]
         words: list[str] = []
-        for w in display_name(target).split():
+        name = target.name
+        if fold_text(name).startswith(fold_text(target.brand)):
+            name = name[len(target.brand) :].strip(" -")
+        if rng.random() < 0.5:
+            words.append(self._brand_code(target.brand))
+            transforms.append("brand_code")
+        else:
+            words.append(target.brand.upper())
+        for w in name.split():
             key = fold_text(w).strip(".,")
             if key in discriminating:
                 words.append(w.upper() if rng.random() < 0.5 else w)
                 continue
-            if len(w) >= 7 and w.isalpha() and rng.random() < 0.35:
-                words.append(w[:5].upper() + ".")
-                transforms.append("truncate_shared")
+            if len(w) >= 6 and w.isalpha() and rng.random() < 0.5:
+                if rng.random() < 0.5:
+                    words.append(w[: rng.randint(3, 5)].upper() + ".")
+                    transforms.append("truncate_shared")
+                else:
+                    words.append(self._consonant_skeleton(w))
+                    transforms.append("skeleton_shared")
             else:
                 words.append(w.upper() if rng.random() < 0.6 else w)
         if _total(target) != _total(negative) or rng.random() < 0.5:
