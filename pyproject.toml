@@ -1,0 +1,84 @@
+[project]
+name = "skumatch"
+version = "0.0.1"
+description = "Hybrid SKU & Invoice Semantic Matching Service (pgvector + FTS + trigram with Reciprocal Rank Fusion)"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "pgvector>=0.3.6",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "structlog>=24.4",
+    "onnxruntime>=1.20",
+    "tokenizers>=0.20",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+data = [
+    "duckdb>=1.1",
+    "pyarrow>=18",
+    "huggingface-hub>=0.26",
+]
+eval = [
+    "mlflow-skinny>=2.18",
+    "httpx>=0.27",
+]
+dev = [
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "asgi-lifespan>=2.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/skumatch"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "scripts", "tests"]
+extend-exclude = ["mlruns"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "N", "ASYNC", "S"]
+ignore = ["S101", "S311", "RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "N802"]
+"scripts/**" = ["S603", "S607"]
+"migrations/**" = ["N999"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+mypy_path = "src"
+files = ["src"]
+
+[[tool.mypy.overrides]]
+module = ["pgvector.*", "onnxruntime.*", "tokenizers.*", "asyncpg.*", "duckdb.*", "mlflow.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+markers = [
+    "integration: requires a running PostgreSQL with pgvector (SKUMATCH_TEST_DATABASE_URL)",
+    "model: requires the ONNX model on disk (SKUMATCH_MODEL_DIR)",
+]
+addopts = "-ra"

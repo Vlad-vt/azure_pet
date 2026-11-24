@@ -1,0 +1,76 @@
+# Local development stack: PostgreSQL 16 + pgvector, PgBouncer (transaction pooling), API.
+# Usage: `make up` (db + pgbouncer) or `docker compose --profile app up --build` (adds the API).
+name: skumatch
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: skumatch
+      POSTGRES_PASSWORD: skumatch  # local-only dev credential
+      POSTGRES_DB: skumatch
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c maintenance_work_mem=256MB
+      -c max_connections=100
+      -c shared_preload_libraries=pg_stat_statements
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U skumatch -d skumatch"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.23.1-p3
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: skumatch
+      DB_PASSWORD: skumatch
+      DB_NAME: skumatch
+      AUTH_TYPE: scram-sha-256
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: "500"
+      DEFAULT_POOL_SIZE: "20"
+      MIN_POOL_SIZE: "2"
+      SERVER_RESET_QUERY: ""
+      MAX_PREPARED_STATEMENTS: "0"
+      IGNORE_STARTUP_PARAMETERS: "extra_float_digits,options,statement_timeout"
+    ports:
+      - "6432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U skumatch"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    profiles: ["app"]
+    build: .
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+    environment:
+      SKUMATCH_ENV: local
+      SKUMATCH_DATABASE_URL: postgresql+asyncpg://skumatch:skumatch@pgbouncer:5432/skumatch
+      SKUMATCH_DATABASE_URL_DIRECT: postgresql+asyncpg://skumatch:skumatch@db:5432/skumatch
+      SKUMATCH_DB_PGBOUNCER: "true"
+    ports:
+      - "8000:8000"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 1536M
+
+volumes:
+  pgdata:
