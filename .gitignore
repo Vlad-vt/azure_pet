@@ -39,3 +39,4 @@ infra/helm/**/charts/*.tgz
 .idea/
 .vscode/
 .DS_Store
+*.whl
