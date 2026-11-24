@@ -57,10 +57,11 @@ class MatchResult:
 @dataclass(frozen=True, slots=True)
 class FusionConfig:
     k: int = 60
-    w_dense: float = 1.0
-    w_fts: float = 1.0
-    w_trgm: float = 1.0
+    w_dense: float = 0.5
+    w_fts: float = 0.25
+    w_trgm: float = 1.5
     w_unit: float = 1.0  # bonus list: candidates whose pack size equals the query's
+    unit_window: int = 20
     candidates: int = 50
     trgm_threshold: float = 0.15
     ef_search: int = 80
@@ -73,6 +74,7 @@ class FusionConfig:
             w_fts=s.rrf_w_fts,
             w_trgm=s.rrf_w_trgm,
             w_unit=s.rrf_w_unit,
+            unit_window=s.rrf_unit_window,
             candidates=s.candidates_per_retriever,
             trgm_threshold=s.trgm_threshold,
             ef_search=s.hnsw_ef_search,
@@ -80,6 +82,31 @@ class FusionConfig:
 
     def weights(self) -> dict[str, float]:
         return {"dense": self.w_dense, "fts": self.w_fts, "trgm": self.w_trgm, "unit": self.w_unit}
+
+
+@dataclass(slots=True)
+class RetrievalLists:
+    normalized: str
+    query_quantity: Quantity | None
+    ranked: dict[str, list[int]]
+    unit_ok: dict[int, bool]
+    skus: dict[int, dict[str, Any]]
+    db_ms: float
+
+
+def fuse(
+    lists: RetrievalLists, mode: MatchMode, cfg: FusionConfig, top_k: int
+) -> list[tuple[int, float]]:
+    """Pure fusion step: RRF over the mode's retrievers (+ unit-agreement list for hybrid)."""
+    ranked = {r: lists.ranked.get(r, []) for r in _RETRIEVERS[mode]}
+    weights = cfg.weights()
+    inputs: dict[str, list[int]] = dict(ranked)
+    if mode is MatchMode.HYBRID and lists.query_quantity is not None and cfg.w_unit > 0:
+        # Unit agreement is a 4th ranked list: unit-matching candidates in pre-fusion order,
+        # restricted to the pre-fusion top `unit_window` so it re-orders, never injects.
+        pre = reciprocal_rank_fusion(ranked, weights, cfg.k)[: cfg.unit_window]
+        inputs["unit"] = [i for i, _ in pre if lists.unit_ok.get(i)]
+    return reciprocal_rank_fusion(inputs, weights, cfg.k)[:top_k]
 
 
 def _vec_literal(vec: npt.NDArray[np.float32]) -> str:
@@ -149,19 +176,20 @@ class MatchEngine:
             return bool(value == 1)
 
     # ------------------------------------------------------------------ internals
-    async def _match_with_vector(
+    async def retrieve(
         self,
         query: str,
-        vec: npt.NDArray[np.float32] | None,
-        top_k: int,
-        mode: MatchMode,
-        fusion: FusionConfig | None,
-        include_sku: bool,
-    ) -> MatchResult:
+        vec: npt.NDArray[np.float32] | None = None,
+        *,
+        retrievers: tuple[str, ...] = ("dense", "fts", "trgm"),
+        fusion: FusionConfig | None = None,
+    ) -> RetrievalLists:
+        """Run the retrievers once and return their ranked lists (used by the API and eval)."""
         cfg = fusion or self.fusion
-        retrievers = _RETRIEVERS[mode]
         normalized = normalize_for_search(query)
         q_qty = parse_quantity(normalized)
+        if "dense" in retrievers and vec is None:
+            vec = await asyncio.to_thread(self._embedder.embed_one, normalize_for_embedding(query))
         params: dict[str, Any] = {
             "k": cfg.candidates,
             "q": normalized,
@@ -180,14 +208,12 @@ class MatchEngine:
                 },
             )
             rows = (await session.execute(retrieval_sql(retrievers), params)).all()
-            db_ms = (time.perf_counter() - t0) * 1000
-
             ranked: dict[str, list[int]] = {r: [] for r in retrievers}
             for sku_id, retriever, _rank, _score in sorted(rows, key=lambda r: (r[1], r[2])):
                 ranked[retriever].append(int(sku_id))
-
             candidate_ids = {i for ids in ranked.values() for i in ids}
             skus = await self._load_skus(session, candidate_ids) if candidate_ids else {}
+        db_ms = (time.perf_counter() - t0) * 1000
 
         unit_ok: dict[int, bool] = {}
         if q_qty is not None:
@@ -195,31 +221,39 @@ class MatchEngine:
                 unit_ok[sku_id] = q_qty.matches(
                     Quantity(sku["qty_count"], sku["qty_amount"], sku["qty_unit"])
                 )
-        lists: dict[str, list[int]] = dict(ranked)
-        if mode is MatchMode.HYBRID and q_qty is not None and cfg.w_unit > 0:
-            # Unit agreement acts as a 4th ranked list ordered by the pre-fusion order.
-            pre = reciprocal_rank_fusion(ranked, cfg.weights(), cfg.k)
-            lists["unit"] = [i for i, _ in pre if unit_ok.get(i)]
-        weights = cfg.weights() if mode is MatchMode.HYBRID else None
-        fused = reciprocal_rank_fusion(lists, weights, cfg.k)[:top_k]
+        return RetrievalLists(normalized, q_qty, ranked, unit_ok, skus, round(db_ms, 2))
 
-        rank_of = {r: {i: n for n, i in enumerate(ids, start=1)} for r, ids in ranked.items()}
+    async def _match_with_vector(
+        self,
+        query: str,
+        vec: npt.NDArray[np.float32] | None,
+        top_k: int,
+        mode: MatchMode,
+        fusion: FusionConfig | None,
+        include_sku: bool,
+    ) -> MatchResult:
+        cfg = fusion or self.fusion
+        retrievers = _RETRIEVERS[mode]
+        lists = await self.retrieve(query, vec, retrievers=retrievers, fusion=cfg)
+        fused = fuse(lists, mode, cfg, top_k)
+        rank_of = {r: {i: n for n, i in enumerate(ids, start=1)} for r, ids in lists.ranked.items()}
+        has_qty = lists.query_quantity is not None
         candidates = [
             MatchCandidate(
                 sku_id=sku_id,
                 score=round(score, 6),
                 ranks={r: rank_of[r][sku_id] for r in retrievers if sku_id in rank_of[r]},
-                unit_match=unit_ok.get(sku_id) if q_qty is not None else None,
-                sku=skus.get(sku_id) if include_sku else None,
+                unit_match=lists.unit_ok.get(sku_id, False) if has_qty else None,
+                sku=lists.skus.get(sku_id) if include_sku else None,
             )
             for sku_id, score in fused
         ]
         return MatchResult(
-            query_normalized=normalized,
-            query_quantity=q_qty.token() if q_qty else None,
+            query_normalized=lists.normalized,
+            query_quantity=lists.query_quantity.token() if lists.query_quantity else None,
             mode=mode,
             candidates=candidates,
-            timings_ms={"db": round(db_ms, 2)},
+            timings_ms={"db": lists.db_ms},
         )
 
     @staticmethod

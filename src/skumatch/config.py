@@ -41,10 +41,11 @@ class Settings(BaseSettings):
 
     # Retrieval / fusion
     rrf_k: int = Field(default=60, ge=1)
-    rrf_w_dense: float = Field(default=1.0, ge=0.0)
-    rrf_w_fts: float = Field(default=1.0, ge=0.0)
-    rrf_w_trgm: float = Field(default=1.0, ge=0.0)
-    rrf_w_unit: float = Field(default=1.0, ge=0.0)
+    rrf_w_dense: float = Field(default=0.5, ge=0.0)  # dev-tuned (docs/eval_report.md)
+    rrf_w_fts: float = Field(default=0.25, ge=0.0)  # dev-tuned
+    rrf_w_trgm: float = Field(default=1.5, ge=0.0)  # dev-tuned
+    rrf_w_unit: float = Field(default=1.0, ge=0.0)  # dev-tuned
+    rrf_unit_window: int = Field(default=20, ge=1, le=500)
     trgm_threshold: float = Field(default=0.15, ge=0.0, le=1.0)
     candidates_per_retriever: int = Field(default=50, ge=1, le=500)
     hnsw_ef_search: int = Field(default=80, ge=10, le=1000)

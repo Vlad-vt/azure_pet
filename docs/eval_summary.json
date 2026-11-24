@@ -1,0 +1,89 @@
+{
+  "tuned": {
+    "k": 60,
+    "w_dense": 0.5,
+    "w_fts": 0.25,
+    "w_trgm": 1.5,
+    "w_unit": 1.0,
+    "unit_window": 20,
+    "candidates": 50,
+    "trgm_threshold": 0.15,
+    "ef_search": 80
+  },
+  "all": {
+    "Dense (HNSW)": {
+      "recall@1": 0.9416058394160584,
+      "recall@5": 0.9854014598540146,
+      "recall@10": 0.9895724713242962,
+      "mrr@10": 0.9605359418706656,
+      "ndcg@10": 0.9678041194155832
+    },
+    "Lexical (FTS+Trigram RRF)": {
+      "recall@1": 0.935349322210636,
+      "recall@5": 0.9916579770594369,
+      "recall@10": 0.9989572471324296,
+      "mrr@10": 0.9604014598540146,
+      "ndcg@10": 0.9700005290350311
+    },
+    "Hybrid RRF (equal weights)": {
+      "recall@1": 0.959332638164755,
+      "recall@5": 0.9958289885297185,
+      "recall@10": 0.9989572471324296,
+      "mrr@10": 0.9762119933131403,
+      "ndcg@10": 0.9819488580441291
+    },
+    "Hybrid RRF (dev-tuned, shipped)": {
+      "recall@1": 0.9687174139728885,
+      "recall@5": 0.9968717413972888,
+      "recall@10": 0.9979144942648592,
+      "mrr@10": 0.9819603753910324,
+      "ndcg@10": 0.9860516314628933
+    }
+  },
+  "latency": {
+    "dense": {
+      "p50_ms": 12.024705499925403,
+      "p95_ms": 15.238413150109409
+    },
+    "lexical": {
+      "p50_ms": 18.41992299978301,
+      "p95_ms": 33.2987723000542
+    },
+    "hybrid": {
+      "p50_ms": 27.860512999950515,
+      "p95_ms": 44.94244704983429
+    }
+  },
+  "significant": {
+    "abbreviations|Dense|recall@1": true,
+    "abbreviations|Dense|mrr@10": true,
+    "abbreviations|Lexical|recall@1": false,
+    "abbreviations|Lexical|mrr@10": false,
+    "abbreviations|Trigram only|recall@1": false,
+    "abbreviations|Trigram only|mrr@10": false,
+    "unit_swap|Dense|recall@1": false,
+    "unit_swap|Dense|mrr@10": false,
+    "unit_swap|Lexical|recall@1": false,
+    "unit_swap|Lexical|mrr@10": false,
+    "unit_swap|Trigram only|recall@1": false,
+    "unit_swap|Trigram only|mrr@10": false,
+    "ocr_typos|Dense|recall@1": true,
+    "ocr_typos|Dense|mrr@10": true,
+    "ocr_typos|Lexical|recall@1": true,
+    "ocr_typos|Lexical|mrr@10": true,
+    "ocr_typos|Trigram only|recall@1": false,
+    "ocr_typos|Trigram only|mrr@10": false,
+    "hard_negatives|Dense|recall@1": false,
+    "hard_negatives|Dense|mrr@10": false,
+    "hard_negatives|Lexical|recall@1": true,
+    "hard_negatives|Lexical|mrr@10": true,
+    "hard_negatives|Trigram only|recall@1": false,
+    "hard_negatives|Trigram only|mrr@10": false,
+    "all|Dense|recall@1": true,
+    "all|Dense|mrr@10": true,
+    "all|Lexical|recall@1": true,
+    "all|Lexical|mrr@10": true,
+    "all|Trigram only|recall@1": false,
+    "all|Trigram only|mrr@10": false
+  }
+}

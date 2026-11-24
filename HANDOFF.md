@@ -4,15 +4,16 @@
 > Execution log: GitHub Issue #1 (`Execution Log & Cross-Device Handoff`).
 
 ## Current Stage & Last Tag
-- **Current stage:** Stage 3 — Hybrid RRF Engine & FastAPI ✅ (Stage 0 Azure cleanup still pending sign-in)
-- **Last tag:** `v0.3-hybrid-api`
+- **Current stage:** Stage 4 — Evaluation Suite & Reporting ✅ (Stage 0 Azure cleanup still pending sign-in)
+- **Last tag:** `v0.4-eval`
 
 | Tag | Commit | Notes |
 |---|---|---|
 | `v0.0-bootstrap` | `18ced0b` | repo skeleton |
 | `v0.1-data` | `0bd95e0` | data + generator |
 | `v0.2-db-ingest` | `07042bd` | schema, indexes, ingestion |
-| `v0.3-hybrid-api` | see `git log --grep "feat(stage-3)"` | RRF engine + API |
+| `v0.3-hybrid-api` | `9a09c22` | RRF engine + API |
+| `v0.4-eval` | see `git log --grep "feat(stage-4)"` | benchmark + MLflow |
 
 > Tags are created locally in the cloud session; its git proxy rejects tag pushes (HTTP 403).
 > From a workstation: `git fetch origin && git tag -a <tag> <commit> -m <tag> && git push origin --tags`.
@@ -54,6 +55,15 @@
   middleware, access log without bodies, generic 500 handler
 - `Dockerfile` (multi-stage, uv.lock, model baked into a layer, non-root uid 10001), `.dockerignore`
 - Tests: `tests/unit/test_fusion.py`, `tests/integration/test_api.py`
+- **Stage 4:** `scripts/eval.py` — retrieve once, fuse offline through the production `fuse()`;
+  dev-split grid search (200 configs, all retriever weights > 0); test-split metrics per slice
+  (R@1/5/10, MRR@10, NDCG@10), ablations, live p50/p95 latency per mode
+- `src/skumatch/evaluation/metrics.py` (metrics, paired bootstrap, exact sign test),
+  `src/skumatch/evaluation/llm_judge.py` (optional, only with `--llm-judge` + API key)
+- MLflow tracking in `mlruns/` (local SQLite + artifacts, git-ignored): parent run + nested run per system
+- `docs/eval_report.md`, `docs/eval_notes.md`, `docs/eval_summary.json`, README metrics table
+- Data fix `844ad59`: token-set catalog dedup (label noise), generator v2 (harder, more realistic)
+- Shipped fusion defaults (dev-tuned): `w_dense=0.5, w_fts=0.25, w_trgm=1.5, w_unit=1.0, k=60`
 
 ## Verified Metrics & Commands
 ```text
@@ -75,6 +85,13 @@ POST /v1/match  concurrency 4 -> p50 45.0 ms, p95 63.7 ms, 87 rps
 POST /v1/match/batch (100 lines) -> 1.23 s
 runtime venv 396 MB + model 135 MB; process RSS ~540 MB (fits 0.5 vCPU / 1.0 GiB ACA)
 pytest (unit + integration) -> 70 passed
+# Stage 4 (test split = 911 lines; full table in docs/eval_report.md)
+Dense R@1 0.942 | Lexical 0.935 | Hybrid equal-w 0.959 | Hybrid dev-tuned (shipped) 0.969, MRR@10 0.982
+Hybrid vs Dense   overall R@1 +0.027 (p<0.001) | ocr_typos +0.035 ✅ | hard_negatives +0.008 (tie)
+Hybrid vs Lexical overall R@1 +0.033 (p<0.001) | ocr_typos +0.131 ✅ | hard_negatives +0.021 ✅
+Hybrid vs Trigram-only: tie (0.969 vs 0.971, p≈0.85)
+Live latency (ORT 1 thread, local PG): dense p95 ~14 ms, lexical ~33 ms, hybrid ~43 ms
+pytest -> 77 passed
 ```
 
 ## Azure Resources State
@@ -97,6 +114,11 @@ pytest (unit + integration) -> 70 passed
 - FTS uses the `simple` config on pre-folded text (no stemming); abbreviations are handled with
   prefix terms (`'vollm':*`). Migrations always use the *direct* URL (never PgBouncer).
 - Local integration DB: `SKUMATCH_TEST_DATABASE_URL=postgresql+asyncpg://skumatch:skumatch@localhost:5432/skumatch_test`.
+- Benchmark honesty: v1 saturated; v2 fixed label noise and raised difficulty *before* the
+  final comparison. Trigram-only ties Hybrid on this synthetic set (char-level noise); Hybrid
+  ships for robustness (see `docs/eval_notes.md`). Hybrid vs Dense on `hard_negatives` is a tie.
+- MLflow 3 put the plain file store in maintenance mode; tracking uses `sqlite:///mlruns/mlflow.db`
+  (still local and file-based). Browse: `mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db`.
 - `/healthz` never touches the DB so a stopped database does not crash-loop replicas; `/readyz`
   reports 503 instead. The image cannot be built in the cloud dev container (no Docker daemon);
   the runtime environment was verified with `uv sync --frozen --no-dev --extra data --no-editable`.
