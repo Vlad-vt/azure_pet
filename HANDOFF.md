@@ -115,7 +115,7 @@ GitHub Actions ci (ruff, mypy, pytest vs pgvector/pgvector:pg16, helm, bicep) ->
 - Planned (after `deploy_infra.sh`): RG `rg-skumatch` in `germanywestcentral` (fallback
   `swedencentral` / `polandcentral` / `northeurope`), `skumatch-logs`, `skumatch-env`,
   `skumatch-api`, `skumatch-migrate`, `skumatch-ingest`, `skumatch-pg-<hash>` (B1ms, stopped when idle).
-- Container images: `ghcr.io/vlad-vt/azure_pet:<sha12>` + `:latest` (built by `deploy.yml`).
+- Container images (built and pushed by `deploy.yml` run 3, green): `ghcr.io/vlad-vt/azure_pet:cd26243288d3` and `:latest`. The package is **private** until its visibility is changed (Next Steps, step 3). The `release` job was skipped as designed because OIDC is not configured yet.
 
 ### Budget alerts — manual checklist (if `create_budget.sh` is rejected for the Students offer)
 1. Portal → *Cost Management + Billing* → *Cost Management* → *Budgets* → *+ Add* (scope: the
