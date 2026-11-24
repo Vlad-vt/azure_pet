@@ -1,4 +1,5 @@
-"""SQL for the three retrievers, issued as ONE round-trip (UNION ALL of three ranked CTEs).
+"""SQL for the three retrievers, issued as ONE round-trip (UNION ALL of three ranked CTEs,
+joined to the SKU columns the API returns, so no second query is needed).
 
 Each branch is an index-driven top-k:
 * dense — ``ORDER BY embedding <=> $vec LIMIT k``          -> HNSW (vector_cosine_ops)
@@ -53,6 +54,18 @@ trgm AS (
 )"""
 
 _BRANCHES: Final = {"dense": _DENSE, "fts": _FTS, "trgm": _TRGM}
+SKU_COLUMNS: Final = (
+    "ean",
+    "name",
+    "brand",
+    "quantity_raw",
+    "quantity",
+    "qty_count",
+    "qty_amount",
+    "qty_unit",
+    "category",
+    "category_path",
+)
 
 
 def retrieval_sql(retrievers: tuple[str, ...]) -> TextClause:
@@ -65,7 +78,12 @@ def retrieval_sql(retrievers: tuple[str, ...]) -> TextClause:
         f"SELECT id, retriever, rnk, score FROM {r}"  # noqa: S608
         for r in retrievers
     )
-    return text(f"WITH {ctes}\n{union}")
+    cols = ", ".join(f"s.{c}" for c in SKU_COLUMNS)
+    return text(
+        f"WITH {ctes},\nranked AS ({union})\n"
+        f"SELECT r.id, r.retriever, r.rnk, r.score, {cols}\n"
+        "FROM ranked r JOIN skus s ON s.id = r.id"
+    )
 
 
 def build_tsquery(normalized: str) -> str:

@@ -14,7 +14,9 @@ def build_engine(settings: Settings, url: str | None = None) -> AsyncEngine:
     connect_args: dict[str, Any] = {
         "timeout": 10,
         "command_timeout": settings.db_statement_timeout_ms / 1000 * 2,
-        "server_settings": {"application_name": "skumatch"},
+        # Retrieval GUCs are pinned per connection so a match needs no BEGIN / SET LOCAL /
+        # COMMIT round-trips (each costs a full RTT, ~25 ms cross-region on Azure).
+        "server_settings": {"application_name": "skumatch", **settings.session_gucs()},
     }
     if settings.db_pgbouncer:
         # PgBouncer transaction pooling: no server-side prepared statements, no startup GUCs.

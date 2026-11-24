@@ -66,7 +66,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await asyncio.to_thread(embedder.embed_one, "warmup")
         engine = build_engine(cfg)
         app.state.match_engine = MatchEngine(
-            build_sessionmaker(engine), embedder, FusionConfig.from_settings(cfg)
+            build_sessionmaker(engine),
+            embedder,
+            FusionConfig.from_settings(cfg),
+            session_gucs=None if cfg.db_pgbouncer else cfg.session_gucs(),
         )
         log.info(
             "startup_complete",

@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy as np
 import numpy.typing as npt
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from skumatch.config import Settings
@@ -20,7 +20,7 @@ from skumatch.embeddings import OnnxEmbedder
 from skumatch.normalize import Quantity, normalize_for_search, parse_quantity
 from skumatch.normalize.text import normalize_for_embedding
 from skumatch.retrieval.fusion import reciprocal_rank_fusion
-from skumatch.retrieval.sql import SET_LOCALS, build_tsquery, retrieval_sql
+from skumatch.retrieval.sql import SET_LOCALS, SKU_COLUMNS, build_tsquery, retrieval_sql
 
 
 class MatchMode(StrEnum):
@@ -80,6 +80,12 @@ class FusionConfig:
             ef_search=s.hnsw_ef_search,
         )
 
+    def gucs(self) -> dict[str, str]:
+        return {
+            "hnsw.ef_search": str(max(self.ef_search, self.candidates)),
+            "pg_trgm.similarity_threshold": str(self.trgm_threshold),
+        }
+
     def weights(self) -> dict[str, float]:
         return {"dense": self.w_dense, "fts": self.w_fts, "trgm": self.w_trgm, "unit": self.w_unit}
 
@@ -119,10 +125,17 @@ class MatchEngine:
         sessionmaker: async_sessionmaker[AsyncSession],
         embedder: OnnxEmbedder,
         fusion: FusionConfig | None = None,
+        *,
+        session_gucs: dict[str, str] | None = None,
     ) -> None:
+        """``session_gucs``: GUC values already pinned on every pooled connection (direct
+        connections). When they match the request's config, queries run in AUTOCOMMIT with a
+        single round-trip; otherwise (PgBouncer, per-request overrides) a transaction with
+        ``set_config(..., is_local => true)`` is used."""
         self._sessionmaker = sessionmaker
         self._embedder = embedder
         self.fusion = fusion or FusionConfig()
+        self._session_gucs = session_gucs
 
     # ------------------------------------------------------------------ public
     async def match(
@@ -198,22 +211,32 @@ class MatchEngine:
         if vec is not None:
             params["vec"] = _vec_literal(vec)
 
+        sql = retrieval_sql(retrievers)
         t0 = time.perf_counter()
-        async with self._sessionmaker() as session, session.begin():
-            await session.execute(
-                SET_LOCALS,
-                {
-                    "ef_search": str(max(cfg.ef_search, cfg.candidates)),
-                    "trgm_threshold": str(cfg.trgm_threshold),
-                },
-            )
-            rows = (await session.execute(retrieval_sql(retrievers), params)).all()
-            ranked: dict[str, list[int]] = {r: [] for r in retrievers}
-            for sku_id, retriever, _rank, _score in sorted(rows, key=lambda r: (r[1], r[2])):
-                ranked[retriever].append(int(sku_id))
-            candidate_ids = {i for ids in ranked.values() for i in ids}
-            skus = await self._load_skus(session, candidate_ids) if candidate_ids else {}
+        async with self._sessionmaker() as session:
+            if self._session_gucs is not None and self._session_gucs == cfg.gucs():
+                conn = await session.connection(execution_options={"isolation_level": "AUTOCOMMIT"})
+                rows = (await conn.execute(sql, params)).all()
+            else:
+                async with session.begin():
+                    gucs = cfg.gucs()
+                    await session.execute(
+                        SET_LOCALS,
+                        {
+                            "ef_search": gucs["hnsw.ef_search"],
+                            "trgm_threshold": gucs["pg_trgm.similarity_threshold"],
+                        },
+                    )
+                    rows = (await session.execute(sql, params)).all()
         db_ms = (time.perf_counter() - t0) * 1000
+
+        ranked: dict[str, list[int]] = {r: [] for r in retrievers}
+        skus: dict[int, dict[str, Any]] = {}
+        for row in sorted(rows, key=lambda r: (r.retriever, r.rnk)):
+            sku_id = int(row.id)
+            ranked[row.retriever].append(sku_id)
+            if sku_id not in skus:
+                skus[sku_id] = {"id": sku_id, **{c: getattr(row, c) for c in SKU_COLUMNS}}
 
         unit_ok: dict[int, bool] = {}
         if q_qty is not None:
@@ -255,23 +278,6 @@ class MatchEngine:
             candidates=candidates,
             timings_ms={"db": lists.db_ms},
         )
-
-    @staticmethod
-    async def _load_skus(session: AsyncSession, ids: set[int]) -> dict[int, dict[str, Any]]:
-        stmt = select(
-            Sku.id,
-            Sku.ean,
-            Sku.name,
-            Sku.brand,
-            Sku.quantity_raw,
-            Sku.quantity,
-            Sku.qty_count,
-            Sku.qty_amount,
-            Sku.qty_unit,
-            Sku.category,
-            Sku.category_path,
-        ).where(Sku.id.in_(ids))
-        return {int(r.id): dict(r._mapping) for r in (await session.execute(stmt)).all()}
 
 
 def _sku_dict(row: Sku) -> dict[str, Any]:

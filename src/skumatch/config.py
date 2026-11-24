@@ -51,6 +51,13 @@ class Settings(BaseSettings):
     hnsw_ef_search: int = Field(default=80, ge=10, le=1000)
     max_batch_size: int = Field(default=100, ge=1, le=1000)
 
+    def session_gucs(self) -> dict[str, str]:
+        """Retrieval GUCs. Pinned per connection when not behind PgBouncer (see db.session)."""
+        return {
+            "hnsw.ef_search": str(max(self.hnsw_ef_search, self.candidates_per_retriever)),
+            "pg_trgm.similarity_threshold": str(self.trgm_threshold),
+        }
+
     @property
     def migration_url(self) -> str:
         return self.database_url_direct or self.database_url
