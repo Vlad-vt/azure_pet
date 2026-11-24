@@ -4,8 +4,16 @@
 > Execution log: GitHub Issue #1 (`Execution Log & Cross-Device Handoff`).
 
 ## Current Stage & Last Tag
-- **Current stage:** Stage 0 — Cleanup & Bootstrap (repository part complete; Azure cleanup pending login)
-- **Last tag:** `v0.0-bootstrap`
+- **Current stage:** Stage 1 — Data & Synthetic Benchmark ✅ (Stage 0 Azure cleanup still pending sign-in)
+- **Last tag:** `v0.1-data`
+
+| Tag | Commit | Notes |
+|---|---|---|
+| `v0.0-bootstrap` | `18ced0b` | repo skeleton |
+| `v0.1-data` | see `git log --grep "feat(stage-1)"` | data + generator |
+
+> Tags are created locally in the cloud session; its git proxy rejects tag pushes (HTTP 403).
+> From a workstation: `git fetch origin && git tag -a <tag> <commit> -m <tag> && git push origin --tags`.
 
 ## Completed Deliverables
 - `PROJECT_PLAN.md`, `CLAUDE.md` (agent rules + budget guardrails), `HANDOFF.md`
@@ -17,12 +25,25 @@
 - `src/skumatch/config.py` (pydantic-settings, `SKUMATCH_` prefix, pool 5+5 defaults)
 - `src/skumatch/logging.py` (structlog JSON; redacts `query`/`text`/`vector`/`embedding`/`body`)
 - GitHub Issue #1 created
+- **Stage 1:** `scripts/fetch_off.py` — Open Food Facts HF Parquet (`food.parquet`, 4.8M rows) →
+  8,000 German SKUs (`data/catalog.parquet`, 308 KB, committed; ODbL)
+- `src/skumatch/normalize/` — unit parsing/canonicalisation (`0,5 kg`→`500g`, `6er 330ml`→`6x330ml`),
+  umlaut/ß folding, token-level OCR repair (`C0CA`→`coca`, `O,5L`→`0,5l`), article-number stripping
+- `src/skumatch/data/synth.py` — deterministic `InvoiceLineGenerator(seed=42)`, 4 slices
+  (`abbreviations`, `unit_swap`, `ocr_typos`, `hard_negatives` with recorded sibling SKU)
+- `data/golden_eval.jsonl` — 1,200 labelled lines (300/slice; 289 dev / 911 test)
+- `docs/data_report.md`, `scripts/data_report.py`, `scripts/download_model.py`
+- Tests: `tests/unit/test_normalize.py`, `tests/unit/test_synth.py`
 
 ## Verified Metrics & Commands
 ```text
 ruff check .        -> All checks passed
 mypy src (strict)   -> Success: no issues found
 pytest tests/unit   -> 3 passed (bootstrap)
+# Stage 1
+make data                       -> 109,929 DE candidates -> 8,000 deduplicated SKUs
+generate_synthetic (seed=42)    -> 1,200 lines; sha256 364202e885e9a566… (byte-identical on rerun)
+pytest                          -> 34 passed
 ```
 
 ## Azure Resources State
@@ -36,11 +57,18 @@ pytest tests/unit   -> 3 passed (bootstrap)
 - Hugging Face downloads use plain HTTPS (`HF_HUB_DISABLE_XET=1`) because the Xet CAS host is not
   on the network allow-list.
 - Work is pushed to `main` (explicitly requested) and mirrored to `claude/hopeful-cori-a644hr`.
+- Catalog dedup key is normalised `brand + name + quantity`; OFF still contains near-duplicates
+  under different brand spellings (e.g. `Coca-Cola` vs `Cola Cola`) — kept on purpose, they are
+  realistic and make Recall@1 honest.
+- Hard negatives require *discriminating evidence* (a name token the sibling lacks, or a
+  different pack size); ambiguous sibling pairs are rejected by the generator.
+- The raw 7.7 GB dump lives in `data/raw/` (git-ignored); only the compact catalog is committed.
 
 ## Exact Next Steps
 1. Complete `az login`, verify the subscription is *Azure for Students*, list and delete old RGs,
    purge soft-deleted Key Vaults / Cognitive Services accounts.
-2. Stage 1: Open Food Facts DE catalog (`scripts/fetch_off.py`) + seed=42 generator → `v0.1-data`.
+2. Stage 2: Alembic schema (HNSW / GIN tsvector / GIN trigram), ONNX INT8 embedder, batch ingest,
+   `make explain` → `v0.2-db-ingest`.
 
 ### Quick Resume Prompt for Another Device
 ```text
