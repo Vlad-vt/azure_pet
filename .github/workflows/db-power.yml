@@ -1,0 +1,54 @@
+# Keeps the Burstable B1ms PostgreSQL server stopped when nobody is demoing.
+# Azure automatically restarts a stopped Flexible Server after 7 days; the schedule below stops it
+# again every 5 days so it never silently bills compute for long.
+name: db-power
+
+on:
+  schedule:
+    - cron: "17 3 */5 * *"   # 03:17 UTC on days 1, 6, 11, 16, 21, 26, 31
+  workflow_dispatch:
+    inputs:
+      action:
+        description: start | stop | status
+        required: true
+        default: status
+        type: choice
+        options: [start, stop, status]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: db-power
+  cancel-in-progress: false
+
+jobs:
+  power:
+    if: vars.AZURE_RG != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RG: ${{ vars.AZURE_RG }}
+      PG_SERVER: ${{ vars.PG_SERVER }}
+      ACTION: ${{ github.event_name == 'schedule' && 'stop' || inputs.action }}
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: ${{ env.ACTION }} PostgreSQL ${{ env.PG_SERVER }}
+        run: |
+          state=$(az postgres flexible-server show -g "$RG" -n "$PG_SERVER" --query state -o tsv)
+          echo "current state: $state"
+          case "$ACTION" in
+            stop)
+              if [ "$state" = "Ready" ]; then az postgres flexible-server stop -g "$RG" -n "$PG_SERVER" -o none; fi ;;
+            start)
+              if [ "$state" = "Stopped" ]; then az postgres flexible-server start -g "$RG" -n "$PG_SERVER" -o none; fi ;;
+          esac
+          final=$(az postgres flexible-server show -g "$RG" -n "$PG_SERVER" --query state -o tsv)
+          echo "final state: $final"
+          echo "PostgreSQL \`$PG_SERVER\`: $state → **$final** ($ACTION)" >> "$GITHUB_STEP_SUMMARY"

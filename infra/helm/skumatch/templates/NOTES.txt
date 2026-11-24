@@ -1,0 +1,5 @@
+skumatch {{ .Chart.AppVersion }} deployed as {{ include "skumatch.fullname" . }}.
+
+  kubectl port-forward svc/{{ include "skumatch.fullname" . }} 8000:{{ .Values.service.port }}
+  curl -s localhost:8000/readyz
+  curl -s -XPOST localhost:8000/v1/match -H 'content-type: application/json' -d '{"text":"FERRERO NUTELLA 0,4KG"}'

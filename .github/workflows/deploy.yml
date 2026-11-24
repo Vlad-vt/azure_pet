@@ -1,0 +1,159 @@
+# Main-branch delivery: tests -> image to ghcr.io -> Alembic migration gate (Container Apps Job)
+# -> new Container App revision (readiness-gated, zero downtime) -> smoke test.
+#
+# Passwordless: azure/login uses GitHub OIDC federated credentials (no client secret).
+# Required repository secrets : AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+# Optional repository secret  : GHCR_PULL_TOKEN (only if the ghcr.io package stays private)
+# Required repository variables: AZURE_RG, ACA_APP, ACA_MIGRATE_JOB, ACA_INGEST_JOB, PG_SERVER
+name: deploy
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**", ".github/workflows/db-power.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  image:
+    name: build & push image
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.ref.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: ref
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.ref.outputs.image }}
+            ghcr.io/${{ github.repository_owner }}/azure_pet:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    name: migrate · deploy · smoke test
+    needs: image
+    # Skipped (not failed) until OIDC + repository variables are configured (infra/scripts/setup_github_oidc.sh).
+    if: vars.AZURE_RG != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      IMAGE: ${{ needs.image.outputs.image }}
+      RG: ${{ vars.AZURE_RG }}
+      APP: ${{ vars.ACA_APP }}
+      MIGRATE_JOB: ${{ vars.ACA_MIGRATE_JOB }}
+      INGEST_JOB: ${{ vars.ACA_INGEST_JOB }}
+      PG_SERVER: ${{ vars.PG_SERVER }}
+    steps:
+      - name: Azure login (OIDC, no secrets)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Ensure the database is running (remember prior state)
+        id: db
+        run: |
+          state=$(az postgres flexible-server show -g "$RG" -n "$PG_SERVER" --query state -o tsv)
+          echo "initial=$state" >> "$GITHUB_OUTPUT"
+          echo "PostgreSQL state: $state"
+          if [ "$state" != "Ready" ]; then
+            az postgres flexible-server start -g "$RG" -n "$PG_SERVER" -o none
+          fi
+
+      - name: Registry credentials for private ghcr.io packages
+        env:
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+        run: |
+          if [ -n "$GHCR_PULL_TOKEN" ]; then
+            for target in "containerapp:$APP" "containerapp job:$MIGRATE_JOB" "containerapp job:$INGEST_JOB"; do
+              kind=${target%%:*}; name=${target#*:}
+              az $kind registry set -g "$RG" -n "$name" --server ghcr.io \
+                --username "${{ github.repository_owner }}" --password "$GHCR_PULL_TOKEN" -o none
+            done
+          fi
+
+      - name: Migration gate (Alembic in a Container Apps Job, new image)
+        run: |
+          az containerapp job update -g "$RG" -n "$MIGRATE_JOB" --image "$IMAGE" -o none
+          az containerapp job update -g "$RG" -n "$INGEST_JOB" --image "$IMAGE" -o none
+          exec_name=$(az containerapp job start -g "$RG" -n "$MIGRATE_JOB" --query name -o tsv)
+          echo "migration execution: $exec_name"
+          for i in $(seq 1 60); do
+            status=$(az containerapp job execution show -g "$RG" -n "$MIGRATE_JOB" \
+              --job-execution-name "$exec_name" --query properties.status -o tsv)
+            echo "[$i] $status"
+            case "$status" in
+              Succeeded) exit 0 ;;
+              Failed|Stopped|Degraded) echo "::error::migration $status — API revision NOT updated"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "::error::migration timed out"; exit 1
+
+      - name: Roll out new revision (traffic moves only when the revision is ready)
+        run: |
+          suffix="g${GITHUB_SHA::7}"
+          az containerapp update -g "$RG" -n "$APP" --image "$IMAGE" --revision-suffix "$suffix" -o none
+          rev="$APP--$suffix"
+          for i in $(seq 1 60); do
+            state=$(az containerapp revision show -g "$RG" -n "$APP" --revision "$rev" \
+              --query properties.provisioningState -o tsv)
+            echo "[$i] $rev provisioning=$state"
+            [ "$state" = "Provisioned" ] && break
+            [ "$state" = "Failed" ] && { echo "::error::revision failed"; exit 1; }
+            sleep 10
+          done
+
+      - name: Smoke test /healthz, /readyz, /v1/match
+        run: |
+          fqdn=$(az containerapp show -g "$RG" -n "$APP" --query properties.configuration.ingress.fqdn -o tsv)
+          echo "url=https://$fqdn" >> "$GITHUB_STEP_SUMMARY"
+          for path in healthz readyz; do
+            ok=0
+            for i in $(seq 1 30); do  # tolerate scale-from-zero cold start
+              if curl -fsS --max-time 20 "https://$fqdn/$path"; then ok=1; echo; break; fi
+              sleep 5
+            done
+            [ $ok = 1 ] || { echo "::error::/$path failed"; exit 1; }
+          done
+          curl -fsS --max-time 20 -X POST "https://$fqdn/v1/match" \
+            -H 'content-type: application/json' \
+            -d '{"text":"FERRERO NUTELLA 0,4 KG","top_k":1}' | tee /tmp/match.json
+          grep -q '"candidates":\[{' /tmp/match.json
+
+      - name: Restore database power state
+        if: always() && steps.db.outputs.initial == 'Stopped'
+        run: az postgres flexible-server stop -g "$RG" -n "$PG_SERVER" -o none --no-wait

@@ -1,0 +1,111 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+    paths-ignore: ["**.md", "docs/**"]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHON_VERSION: "3.12"
+  HF_HUB_DISABLE_XET: "1"
+
+jobs:
+  quality:
+    name: lint · typecheck · tests (pgvector)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: skumatch
+          POSTGRES_PASSWORD: skumatch
+          POSTGRES_DB: skumatch_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U skumatch -d skumatch_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      SKUMATCH_TEST_DATABASE_URL: postgresql+asyncpg://skumatch:skumatch@localhost:5432/skumatch_test
+      SKUMATCH_MODEL_DIR: models/multilingual-e5-small
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python ${{ env.PYTHON_VERSION }} and locked dependencies
+        run: |
+          uv python install "$PYTHON_VERSION"
+          uv sync --frozen --extra data --extra eval --extra dev
+
+      - name: Cache ONNX model
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: onnx-e5-small-${{ hashFiles('scripts/download_model.py') }}
+
+      - name: Download INT8 ONNX model
+        run: uv run --frozen python scripts/download_model.py
+
+      - name: ruff check
+        run: uv run --frozen ruff check . --output-format=github
+
+      - name: ruff format --check
+        run: uv run --frozen ruff format --check .
+
+      - name: mypy (strict)
+        run: uv run --frozen mypy src
+
+      - name: pytest (unit + integration against pgvector/pgvector:pg16)
+        run: uv run --frozen pytest -q
+
+  helm:
+    name: helm lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+      - name: helm lint --strict
+        run: helm lint infra/helm/skumatch --strict --set database.password=ci-dummy
+      - name: helm template
+        run: helm template skumatch infra/helm/skumatch --set database.password=ci-dummy > /dev/null
+
+  bicep:
+    name: bicep build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: az bicep build
+        run: |
+          az bicep install
+          az bicep build --file infra/bicep/main.bicep --stdout > /dev/null
+
+  docker:
+    name: docker build (no push)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

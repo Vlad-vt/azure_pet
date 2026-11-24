@@ -1,0 +1,110 @@
+# Default values for skumatch. The database itself is external (e.g. Azure Flexible Server or
+# a CloudNativePG cluster); this chart runs the API, a PgBouncer pool in front of it and an
+# Alembic migration hook that talks to PostgreSQL directly.
+
+image:
+  repository: ghcr.io/vlad-vt/azure_pet
+  tag: ""            # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+replicaCount: 2
+
+serviceAccount:
+  create: true
+  name: ""
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 768Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+probes:
+  startup:
+    path: /healthz
+    periodSeconds: 2
+    failureThreshold: 30
+  liveness:
+    path: /healthz
+    periodSeconds: 20
+    failureThreshold: 3
+  readiness:
+    path: /readyz
+    periodSeconds: 10
+    failureThreshold: 3
+
+app:
+  logLevel: INFO
+  embeddingThreads: 1
+  dbPoolSize: 5
+  dbMaxOverflow: 5
+  extraEnv: []
+
+database:
+  host: postgres.example.internal
+  port: 5432
+  name: skumatch
+  sslmode: require          # TLS between PgBouncer / migration job and PostgreSQL
+  # Credentials: either reference an existing Secret (keys: username, password) or let the
+  # chart create one from the values below (not recommended outside of dev clusters).
+  existingSecret: ""
+  username: skumatch
+  password: ""
+
+pgbouncer:
+  enabled: true
+  image:
+    repository: edoburu/pgbouncer
+    tag: v1.23.1-p3
+  replicaCount: 2
+  port: 5432
+  poolMode: transaction
+  defaultPoolSize: 20
+  maxClientConn: 500
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+
+migrations:
+  enabled: true             # Alembic upgrade as a pre-install/pre-upgrade hook (direct to DB)
+  backoffLimit: 1
+  activeDeadlineSeconds: 600
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

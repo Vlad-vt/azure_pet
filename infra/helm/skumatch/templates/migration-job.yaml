@@ -1,0 +1,47 @@
+{{- if .Values.migrations.enabled }}
+# Alembic runs against PostgreSQL directly (DDL is not PgBouncer-transaction-mode safe), before
+# the new Deployment revision rolls out. A failed migration aborts the Helm upgrade.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "skumatch.fullname" . }}-migrate-{{ .Release.Revision }}
+  labels:
+    {{- include "skumatch.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "skumatch.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "skumatch.image" . | quote }}
+          command: ["alembic", "upgrade", "head"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            {{- include "skumatch.dbEnv" . | nindent 12 }}
+            - name: SKUMATCH_DB_SSL
+              value: {{ eq .Values.database.sslmode "require" | quote }}
+            - name: SKUMATCH_DATABASE_URL
+              value: "postgresql+asyncpg://$(DB_USER):$(DB_PASSWORD)@{{ .Values.database.host }}:{{ .Values.database.port }}/{{ .Values.database.name }}"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+{{- end }}
