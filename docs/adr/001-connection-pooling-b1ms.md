@@ -32,7 +32,7 @@ conservative SQLAlchemy async pool:
 |---|---|---|
 | `pool_size` | 5 | ≥ in-flight DB work a 0.5 vCPU replica can generate |
 | `max_overflow` | 5 | absorbs bursts; hard cap 10 per replica |
-| `pool_pre_ping` | `True` | survives server stop/start and idle disconnects |
+| `pool_pre_ping` | `False` on Azure (`True` default) | the ping costs a full cross-region round-trip; instead a read-only match is retried once on an invalidated connection (ADR-003) |
 | `pool_recycle` | 1800 s | avoids stale connections across maintenance windows |
 | `pool_timeout` | 10 s | fail fast instead of queueing requests indefinitely |
 | asyncpg `command_timeout` | 10 s | bounded statement time |
@@ -74,3 +74,5 @@ Alembic migrations always use the **direct** URL (`SKUMATCH_DATABASE_URL_DIRECT`
   PostgreSQL removes this exposure for ≈ $1/month (private DNS zone) and is the first hardening
   step after the portfolio phase.
 - Monitoring: alert when the Azure Monitor metric `active_connections` exceeds 35.
+- Update 2026-11-24: the database had to be placed in a different region than the API; the
+  round-trip optimisations are recorded in ADR-003.

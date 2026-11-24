@@ -4,10 +4,9 @@
 > Execution log: GitHub Issue #1 (`Execution Log & Cross-Device Handoff`).
 
 ## Current Stage & Last Tag
-- **Current stage:** Stage 5 — Azure IaC, Helm & ADRs 🟡 (infrastructure deployed; waiting for the
-  ghcr.io package to become public to run migrations, ingest and the real API image).
-  Stage 0 Azure cleanup ✅ done.
-- **Last tag:** `v0.4-eval` (`v0.5-infra` is set after the first successful cloud deploy)
+- **Current stage:** Stage 5 — Azure IaC, Helm & ADRs ✅ (live API verified, DB stopped).
+  Next: Stage 6 — OIDC CI/CD & final polish.
+- **Last tag:** `v0.5-infra`
 
 | Tag | Commit | Notes |
 |---|---|---|
@@ -16,6 +15,7 @@
 | `v0.2-db-ingest` | `07042bd` | schema, indexes, ingestion |
 | `v0.3-hybrid-api` | `9a09c22` | RRF engine + API |
 | `v0.4-eval` | `e4f60fe` | benchmark + MLflow |
+| `v0.5-infra` | see `git log --grep "docs(stage-5)"` | Azure deployed + live smoke test |
 
 > Tags are created locally in the cloud session; its git proxy rejects tag pushes (HTTP 403).
 > From a workstation: `git fetch origin && git tag -a <tag> <commit> -m <tag> && git push origin --tags`.
@@ -78,6 +78,9 @@
 - `.github/workflows/`: `ci.yml`, `deploy.yml` (ghcr.io → migration gate job → revision → smoke
   test → restore DB power state; skipped until OIDC vars exist), `db-power.yml` (actionlint clean)
 - Final `README.md` (Mermaid architecture, benchmark, API, cost analysis)
+- **Stage 5 (deployed):** Azure cleanup, Bicep deploy (`rg-skumatch-chn`), `migrate` + `ingest`
+  jobs in the cloud, live smoke test, budget `skumatch-monthly`, `docs/adr/003-cross-region-topology.md`,
+  round-trip optimisations (joined SQL, pinned GUCs + autocommit, no pre-ping + retry-on-drop)
 
 ## Verified Metrics & Commands
 ```text
@@ -109,6 +112,11 @@ pytest -> 77 passed
 # Stage 5 (local + GitHub Actions)
 bicep build (0.31.92) -> 0 warnings | helm lint --strict -> 0 failures, 9 manifests rendered
 GitHub Actions ci (ruff, mypy, pytest vs pgvector/pgvector:pg16, helm, bicep) -> green
+# Stage 5 — live Azure (100 test lines, warm, sequential)
+job migrate 33 s | job ingest 96 s (8,000 SKUs) | cold start from zero ~27 s
+server p50 50.7 ms / p95 82.7 ms (db p50 40.6 ms, embed 6.5 ms) — was 195.8 / 229.4 before ADR-003 fixes
+live R@1 = 0.94 | /v1/match/batch (100 lines) 4.6 s | pytest -> 78 passed
+budget skumatch-monthly: $30/month, alerts at 16.7 % / 50 % / 100 % (actual) -> Owner role
 ```
 
 ## Azure Resources State
@@ -121,15 +129,16 @@ soft-deleted Cognitive Services accounts; no soft-deleted Key Vaults existed.
 | Resource group | `rg-skumatch-chn` | switzerlandnorth | Succeeded |
 | Log Analytics | `skumatch-logs` (30 d, 0.15 GB/day cap) | switzerlandnorth | Succeeded |
 | ACA environment | `skumatch-env` (`environmentMode: WorkloadProfiles`, Consumption) | switzerlandnorth | Succeeded |
-| Container App | `skumatch-api` (0.5 vCPU / 1 GiB, min 0 / max 2) | switzerlandnorth | placeholder image until ghcr is public |
-| ACA Jobs | `skumatch-migrate`, `skumatch-ingest` | switzerlandnorth | created, not yet run |
+| Container App | `skumatch-api` (0.5 vCPU / 1 GiB, min 0 / max 2), image `:94fbc89176a1` | switzerlandnorth | Running (scale-to-zero) |
+| ACA Jobs | `skumatch-migrate`, `skumatch-ingest` | switzerlandnorth | both Succeeded (2026-11-24) |
+| Budget | `skumatch-monthly` ($30; alerts $5/$15/$30 → Owner) | subscription | Active |
 | PostgreSQL Flexible | `skumatch-pg-t6ucewwfw43f6` (B1ms, PG 16, 32 GiB, no HA) | **denmarkeast** | **Stopped** |
 
 Public URL (after the real image is deployed):
 `https://skumatch-api.lemonisland-f8af8152.switzerlandnorth.azurecontainerapps.io`
 
-Container images (built and pushed by `deploy.yml`, green): `ghcr.io/vlad-vt/azure_pet:cd26243288d3`
-and `:latest`. The package is still **private**, so the app runs a placeholder image for now.
+Container images: `ghcr.io/vlad-vt/azure_pet:<sha12>` + `:latest`, built by `deploy.yml`.
+The package and the repository are **public**.
 The PostgreSQL admin password exists only in the Container App secret `database-url` and in
 `~/.skumatch/pg_admin_password` on the deploying machine (`deploy_infra.sh` recovers it from the
 secret on other machines).
@@ -147,8 +156,8 @@ The subscription carries an *Allowed resource deployment regions* policy: `norwa
 | switzerlandnorth | ❌ `SkuNotAvailable` | ✅ (defaults to *Express* mode → no Jobs; pinned to `WorkloadProfiles`) |
 | denmarkeast | ✅ **created** | ❌ not offered |
 
-Hence the API runs in `switzerlandnorth` and the database in `denmarkeast` (cross-region hop,
-latency to be measured). Moving both into `germanywestcentral` needs an Azure Support request
+Hence the API runs in `switzerlandnorth` and the database in `denmarkeast`; see
+`docs/adr/003-cross-region-topology.md` for the measured latency and round-trip optimisations. Moving both into `germanywestcentral` needs an Azure Support request
 (*Service and subscription limits*) to lift the PostgreSQL restriction.
 
 ### Budget alerts — manual checklist (if `create_budget.sh` is rejected for the Students offer)
@@ -180,6 +189,7 @@ latency to be measured). Moving both into `germanywestcentral` needs an Azure Su
 - MLflow 3 put the plain file store in maintenance mode; tracking uses `sqlite:///mlruns/mlflow.db`
   (still local and file-based). Browse: `mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db`.
 - The cloud agent cannot push git tags (proxy 403) or set GitHub secrets (no `gh` write access);
+  the repository was made public on 2026-11-24 (history scanned: no IDs, passwords or e-mails);
   both are workstation steps. Tags were *not* worked around via CI on purpose.
 - `deploy.yml` builds and pushes the image even before Azure exists; its `release` job is
   *skipped* (not failed) until the `AZURE_RG` variable is set.
@@ -190,22 +200,19 @@ latency to be measured). Moving both into `germanywestcentral` needs an Azure Su
   the runtime environment was verified with `uv sync --frozen --no-dev --extra data --no-editable`.
 
 ## Exact Next Steps
-Run these from a workstation (or ask the agent in a new session) — order matters:
-1. ✅ `az login` + `az account show` → Azure for Students.
-2. ✅ Stage 0 cleanup (done 2026-11-24).
-3. ⏳ **Owner action:** make the image pullable: GitHub → *Packages* → `azure_pet` → *Package settings* → visibility
-   **Public** (recommended for a portfolio). Otherwise create a PAT with `read:packages` and export
-   `GHCR_USERNAME` / `GHCR_TOKEN` for step 4 and save it as the `GHCR_PULL_TOKEN` secret.
-4. Infra is deployed with a placeholder image. Once the package is public:
-   `az postgres flexible-server start -g rg-skumatch-chn -n skumatch-pg-t6ucewwfw43f6`, then
-   `RG=rg-skumatch-chn PG_LOCATION=denmarkeast IMAGE=ghcr.io/vlad-vt/azure_pet:latest infra/scripts/deploy_infra.sh`
-   (re-deploys with the real image and runs the `migrate` + `ingest` jobs), then smoke-test `/v1/match`.
-5. `ALERT_EMAIL=<you> infra/scripts/create_budget.sh` (or the manual checklist above).
-6. `infra/scripts/setup_github_oidc.sh` (needs `gh auth login`) — Entra app + federated credentials
-   (`main`, `environment:production`), Contributor on `rg-skumatch-chn` only, GitHub secrets/variables.
-7. Re-run `deploy` (Actions → deploy → Run workflow) → expect green: migration gate, new revision,
-   smoke test. Then Actions → db-power → `stop`.
-8. Tag `v0.5-infra` and `v1.0-release`; push tags from the workstation (see tag table above).
+1. ✅ Stage 0 cleanup · ✅ ghcr public · ✅ infra deployed · ✅ migrate/ingest · ✅ smoke test · ✅ budget.
+2. Stage 6 — OIDC: create the Entra app + federated credentials (`main`,
+   `environment:production`) and a Contributor assignment on `rg-skumatch-chn` (agent can do the
+   `az` part). The GitHub secrets/variables must be set by the owner (agent has no `gh` write):
+   secrets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`; variables
+   `AZURE_RG=rg-skumatch-chn`, `ACA_APP=skumatch-api`, `ACA_MIGRATE_JOB=skumatch-migrate`,
+   `ACA_INGEST_JOB=skumatch-ingest`, `PG_SERVER=skumatch-pg-t6ucewwfw43f6`.
+3. Run Actions → deploy (workflow_dispatch) → expect green: migration gate, new revision, smoke
+   test, DB restored to Stopped. Then Actions → db-power → `status`.
+4. Final README polish, `v1.0-release`; push all tags from a workstation (tag table above).
+
+To demo: `az postgres flexible-server start -g rg-skumatch-chn -n skumatch-pg-t6ucewwfw43f6`
+(or Actions → db-power → start), open `/docs`, then stop the DB again.
 
 ### Quick Resume Prompt for Another Device
 ```text

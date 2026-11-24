@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Monthly cost budget with e-mail alerts at $5 / $15 / $30 (actual spend).
+# Monthly cost budget with alerts at $5 / $15 / $30 (actual spend). Alerts go to the
+# subscription Owner role by default (no e-mail address needed); set ALERT_EMAIL to add one.
 # Azure for Students subscriptions may reject Cost Management budgets via API (offer
 # MS-AZR-0170P); the script then prints the manual portal checklist from HANDOFF.md.
 source "$(dirname "$0")/common.sh"
 require_students_subscription
-: "${ALERT_EMAIL:?set ALERT_EMAIL=you@example.com}"
+: "${ALERT_EMAIL:=}"
 sub_id=$(az account show --query id -o tsv)
 start=$(date -u +%Y-%m-01)
 end=$(date -u -d "+2 years" +%Y-%m-01)
@@ -16,7 +17,8 @@ notes = {
     f"actual_{amount}": {
         "enabled": True, "operator": "GreaterThanOrEqualTo",
         "threshold": amount / 30 * 100,  # percent of the $30 budget
-        "thresholdType": "Actual", "contactEmails": [email],
+        "thresholdType": "Actual", "contactRoles": ["Owner"],
+        "contactEmails": [email] if email else [],
     }
     for amount in (5, 15, 30)
 }

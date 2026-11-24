@@ -10,6 +10,10 @@ Maps noisy supplier-invoice lines such as `MILSA. Speisequark MAGERSTUFE 0,25 KG
 Fusion**. Embeddings come from a CPU-only INT8 ONNX `multilingual-e5-small`; the whole service
 runs on Azure Container Apps with scale-to-zero for **≈ $0–5/month**.
 
+**Live:** `https://skumatch-api.lemonisland-f8af8152.switzerlandnorth.azurecontainerapps.io/docs`
+(scales to zero; the first request after idle takes ~25 s, and the database is stopped between
+demos — `readyz` returns 503 until it is started).
+
 ## Highlights
 
 - **Hybrid retrieval in a single SQL round-trip:** `UNION ALL` of three index-driven top-k CTEs,
@@ -30,7 +34,7 @@ runs on Azure Container Apps with scale-to-zero for **≈ $0–5/month**.
 flowchart LR
     client([Invoice / AP system]) -->|POST /v1/match| ingress
 
-    subgraph ACA["Azure Container Apps · Consumption · min 0 / max 2 replicas"]
+    subgraph ACA["Azure Container Apps · Consumption · min 0 / max 2 replicas (switzerlandnorth)"]
         ingress[HTTPS ingress] --> api
         subgraph api["FastAPI replica (0.5 vCPU · 1 GiB)"]
             norm[Normalise<br/>units · umlauts · OCR] --> emb[ONNX INT8<br/>multilingual-e5-small]
@@ -42,7 +46,7 @@ flowchart LR
         ingest[[Job: catalog ingest]]
     end
 
-    subgraph PG["PostgreSQL 16 Flexible Server · Burstable B1ms"]
+    subgraph PG["PostgreSQL 16 Flexible Server · Burstable B1ms (denmarkeast)"]
         hnsw[(HNSW<br/>vector_cosine_ops)]
         fts[(GIN<br/>tsvector)]
         trgm[(GIN<br/>gin_trgm_ops)]
@@ -83,8 +87,15 @@ What it means — see [`docs/eval_notes.md`](docs/eval_notes.md):
 - Trigram-only is a strong baseline on this character-level synthetic noise and ties Hybrid —
   reported, not hidden.
 
-Latency (end-to-end: embedding + SQL + fusion, 1 ORT thread, local PostgreSQL): hybrid p50
-27.9 ms / p95 44.9 ms; via HTTP + PgBouncer: p50 34.5 ms / p95 52.6 ms.
+Latency (embedding + SQL + fusion, 1 ORT thread):
+
+| Setup | p50 | p95 |
+|---|---|---|
+| Local PostgreSQL, in-process | 27.9 ms | 44.9 ms |
+| Local, HTTP via PgBouncer | 34.5 ms | 52.6 ms |
+| **Azure, live** (ACA 0.5 vCPU, DB in another region — see [ADR-003](docs/adr/003-cross-region-topology.md)) | **50.7 ms** | **82.7 ms** |
+
+Live R@1 on 100 test lines against the deployed API: 0.94.
 
 ## API
 
@@ -128,7 +139,7 @@ make eval               # benchmark -> docs/eval_report.md, MLflow in ./mlruns
 | `infra/bicep/` | Azure IaC (ACA, PostgreSQL B1ms, Log Analytics, jobs) |
 | `infra/helm/skumatch/` | Kubernetes chart (Deployment, Service, HPA, PDB, PgBouncer, migration hook) |
 | `infra/scripts/` | cleanup, deploy, OIDC setup, budget |
-| `docs/adr/` | ADR-001 pooling on B1ms, ADR-002 ACA vs AKS TCO |
+| `docs/adr/` | ADR-001 pooling on B1ms, ADR-002 ACA vs AKS TCO, ADR-003 cross-region topology |
 
 ## Cost analysis (Azure for Students)
 
