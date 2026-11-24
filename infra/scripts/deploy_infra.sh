@@ -28,8 +28,8 @@ else
     echo "Standard_B1ms not offered in $candidate for this subscription"
   done
 fi
-b1ms_available "$LOCATION" || { echo "ERROR: no region with Standard_B1ms found" >&2; exit 1; }
-echo "Region: $LOCATION"
+b1ms_available "${PG_LOCATION:-$LOCATION}" || { echo "ERROR: no region with Standard_B1ms found" >&2; exit 1; }
+echo "Region: $LOCATION (PostgreSQL: ${PG_LOCATION:-$LOCATION})"
 
 mkdir -p "$STATE_DIR" && chmod 700 "$STATE_DIR"
 pw_file="$STATE_DIR/pg_admin_password"
@@ -54,7 +54,7 @@ PG_PASSWORD="$(cat "$pw_file")"
 az group create -n "$RG" -l "$LOCATION" --tags project=skumatch cost-center=portfolio -o none
 az deployment group create -g "$RG" -n "skumatch-$(date +%Y%m%d%H%M%S)" \
   --template-file "$(dirname "$0")/../bicep/main.bicep" \
-  --parameters namePrefix="$NAME_PREFIX" image="$IMAGE" \
+  --parameters namePrefix="$NAME_PREFIX" image="$IMAGE" pgLocation="${PG_LOCATION:-$LOCATION}" \
                pgAdminPassword="$PG_PASSWORD" \
                ghcrUsername="${GHCR_USERNAME:-}" ghcrToken="${GHCR_TOKEN:-}" \
   --query "properties.outputs" -o json > "$STATE_DIR/outputs.json"

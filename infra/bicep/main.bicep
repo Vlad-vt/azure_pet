@@ -10,6 +10,9 @@ targetScope = 'resourceGroup'
 @description('Azure region for all resources.')
 param location string = resourceGroup().location
 
+@description('Region for PostgreSQL. Defaults to `location`; set it when B1ms capacity is unavailable there (see HANDOFF.md).')
+param pgLocation string = location
+
 @description('Short lowercase prefix used in resource names.')
 @minLength(3)
 @maxLength(12)
@@ -66,7 +69,7 @@ resource logs 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
 // ---------------------------------------------------------------- database
 resource pg 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
   name: pgServerName
-  location: location
+  location: pgLocation
   tags: tags
   sku: {
     name: pgSkuName
