@@ -11,6 +11,7 @@ from httpx import ASGITransport, AsyncClient
 
 from skumatch.api.app import create_app
 from skumatch.config import Settings
+from skumatch.embeddings import OnnxEmbedder
 from skumatch.retrieval import MatchEngine, MatchMode
 
 pytestmark = [pytest.mark.integration, pytest.mark.model]
@@ -112,3 +113,31 @@ async def test_cpu_latency_budget(match_engine: MatchEngine) -> None:
         samples.append((time.perf_counter() - t0) * 1000)
     p95 = float(np.percentile(samples, 95))
     assert p95 < 250, f"p95 {p95:.1f} ms"
+
+
+async def test_match_survives_dropped_connections_without_pre_ping(
+    test_settings: Settings, embedder: OnnxEmbedder, ingested: dict[str, float]
+) -> None:
+    """Azure runs with pool_pre_ping off: a killed pooled connection must cost one retry only."""
+    from sqlalchemy import text
+
+    from skumatch.db.session import build_engine, build_sessionmaker
+
+    cfg = test_settings.model_copy(update={"db_pool_pre_ping": False})
+    eng = build_engine(cfg)
+    try:
+        engine = MatchEngine(build_sessionmaker(eng), embedder, session_gucs=cfg.session_gucs())
+        assert (await engine.match("FERRERO NUTELLA 400G")).candidates
+        admin = build_engine(test_settings)
+        async with admin.connect() as conn:
+            await conn.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE application_name = 'skumatch' AND pid <> pg_backend_pid()"
+                )
+            )
+        await admin.dispose()
+        result = await engine.match("FERRERO NUTELLA 400G")
+        assert result.candidates[0].sku is not None
+    finally:
+        await eng.dispose()

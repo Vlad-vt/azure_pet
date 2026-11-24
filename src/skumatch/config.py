@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     db_pool_recycle_s: int = 1800
     db_statement_timeout_ms: int = 5000
     db_pgbouncer: bool = False
+    # A pre-ping costs one extra round-trip per checkout (~25-30 ms cross-region on Azure); with it
+    # off, the engine retries a match once on a dropped connection instead (see MatchEngine).
+    db_pool_pre_ping: bool = True
     db_ssl: bool = False
 
     # Embeddings

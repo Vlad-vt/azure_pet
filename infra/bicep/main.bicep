@@ -190,6 +190,7 @@ var commonEnv = [
   { name: 'SKUMATCH_DB_PGBOUNCER', value: 'false' }
   { name: 'SKUMATCH_DB_POOL_SIZE', value: '5' }
   { name: 'SKUMATCH_DB_MAX_OVERFLOW', value: '5' }
+  { name: 'SKUMATCH_DB_POOL_PRE_PING', value: 'false' } // retry-on-drop instead (ADR-001)
 ]
 
 resource app 'Microsoft.App/containerApps@2024-03-01' = {

@@ -32,7 +32,7 @@ def build_engine(settings: Settings, url: str | None = None) -> AsyncEngine:
         max_overflow=settings.db_max_overflow,
         pool_timeout=settings.db_pool_timeout_s,
         pool_recycle=settings.db_pool_recycle_s,
-        pool_pre_ping=True,
+        pool_pre_ping=settings.db_pool_pre_ping,
         connect_args=connect_args,
     )
 

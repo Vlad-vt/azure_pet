@@ -11,7 +11,8 @@ from typing import Any
 
 import numpy as np
 import numpy.typing as npt
-from sqlalchemy import text
+from sqlalchemy import Row, TextClause, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from skumatch.config import Settings
@@ -213,21 +214,15 @@ class MatchEngine:
 
         sql = retrieval_sql(retrievers)
         t0 = time.perf_counter()
-        async with self._sessionmaker() as session:
-            if self._session_gucs is not None and self._session_gucs == cfg.gucs():
-                conn = await session.connection(execution_options={"isolation_level": "AUTOCOMMIT"})
-                rows = (await conn.execute(sql, params)).all()
-            else:
-                async with session.begin():
-                    gucs = cfg.gucs()
-                    await session.execute(
-                        SET_LOCALS,
-                        {
-                            "ef_search": gucs["hnsw.ef_search"],
-                            "trgm_threshold": gucs["pg_trgm.similarity_threshold"],
-                        },
-                    )
-                    rows = (await session.execute(sql, params)).all()
+        for attempt in (1, 2):
+            try:
+                rows = await self._fetch(sql, params, cfg)
+                break
+            except DBAPIError as exc:
+                # A pooled connection died (DB restarted / idle timeout). It is invalidated by
+                # SQLAlchemy; the query is read-only, so one retry on a fresh connection is safe.
+                if not exc.connection_invalidated or attempt == 2:
+                    raise
         db_ms = (time.perf_counter() - t0) * 1000
 
         ranked: dict[str, list[int]] = {r: [] for r in retrievers}
@@ -245,6 +240,24 @@ class MatchEngine:
                     Quantity(sku["qty_count"], sku["qty_amount"], sku["qty_unit"])
                 )
         return RetrievalLists(normalized, q_qty, ranked, unit_ok, skus, round(db_ms, 2))
+
+    async def _fetch(
+        self, sql: TextClause, params: dict[str, Any], cfg: FusionConfig
+    ) -> Sequence[Row[Any]]:
+        async with self._sessionmaker() as session:
+            if self._session_gucs is not None and self._session_gucs == cfg.gucs():
+                conn = await session.connection(execution_options={"isolation_level": "AUTOCOMMIT"})
+                return (await conn.execute(sql, params)).all()
+            async with session.begin():
+                gucs = cfg.gucs()
+                await session.execute(
+                    SET_LOCALS,
+                    {
+                        "ef_search": gucs["hnsw.ef_search"],
+                        "trgm_threshold": gucs["pg_trgm.similarity_threshold"],
+                    },
+                )
+                return (await session.execute(sql, params)).all()
 
     async def _match_with_vector(
         self,
