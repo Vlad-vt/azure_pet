@@ -25,7 +25,9 @@ concurrency:
 
 jobs:
   power:
-    if: vars.AZURE_RG != ''
+    # `production` environment: its federated credential and (if defined there) its
+    # variables/secrets apply; repository-level values work as well.
+    environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:

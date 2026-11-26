@@ -63,8 +63,6 @@ jobs:
   release:
     name: migrate · deploy · smoke test
     needs: image
-    # Skipped (not failed) until OIDC + repository variables are configured (infra/scripts/setup_github_oidc.sh).
-    if: vars.AZURE_RG != ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production
@@ -79,6 +77,25 @@ jobs:
       INGEST_JOB: ${{ vars.ACA_INGEST_JOB }}
       PG_SERVER: ${{ vars.PG_SERVER }}
     steps:
+      # Variables/secrets may live at repository or `production` environment level; both are
+      # visible to steps (a job-level `if:` cannot see environment-level values).
+      - name: Check deployment configuration
+        env:
+          HAS_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID != '' }}
+          HAS_TENANT_ID: ${{ secrets.AZURE_TENANT_ID != '' }}
+          HAS_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID != '' }}
+        run: |
+          missing=()
+          [ "$HAS_CLIENT_ID" = true ] || missing+=(secret:AZURE_CLIENT_ID)
+          [ "$HAS_TENANT_ID" = true ] || missing+=(secret:AZURE_TENANT_ID)
+          [ "$HAS_SUBSCRIPTION_ID" = true ] || missing+=(secret:AZURE_SUBSCRIPTION_ID)
+          for v in RG APP MIGRATE_JOB INGEST_JOB PG_SERVER; do
+            [ -n "${!v}" ] || missing+=("var:$v")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::missing configuration: ${missing[*]} (see HANDOFF.md, Stage 6)"; exit 1
+          fi
+
       - name: Azure login (OIDC, no secrets)
         uses: azure/login@v2
         with:
